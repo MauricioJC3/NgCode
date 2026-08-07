@@ -462,7 +462,11 @@ func downloadChecksums(ctx context.Context, url string) (map[string]string, erro
 		if len(fields) != 2 {
 			continue
 		}
-		sums[fields[1]] = fields[0]
+		// sha256sum's binary-mode output glues a "*" onto the filename
+		// (confirmed on the Windows CI runner; macOS's shasum -a 256 never
+		// does this) — strip it so the key matches assetNameForPlatform().
+		name := strings.TrimPrefix(fields[1], "*")
+		sums[name] = fields[0]
 	}
 	return sums, nil
 }

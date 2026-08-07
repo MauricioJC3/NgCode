@@ -457,6 +457,34 @@ func TestDownloadChecksums(t *testing.T) {
 			t.Fatalf("want error on a 404 response")
 		}
 	})
+
+	// Regression: a real CI run (v0.0.1) showed sha256sum on the Windows
+	// runner emits binary-mode output ("<hex> *<filename>", asterisk glued
+	// to the filename), while shasum -a 256 on macOS emits text-mode output
+	// ("<hex>  <filename>", no asterisk) — confirmed by inspecting the
+	// actual published checksums.txt. Without stripping it, the parsed key
+	// for the Windows asset was literally "*ngcode-windows-amd64.exe",
+	// which UpdateAccept's checksums[assetNameForPlatform()] lookup would
+	// never match, breaking auto-update on Windows (the primary platform).
+	t.Run("strips the leading asterisk from binary-mode sha256sum output", func(t *testing.T) {
+		body := "aaaa000000000000000000000000000000000000000000000000000000000000 *ngcode-windows-amd64.exe\n" +
+			"bbbb111111111111111111111111111111111111111111111111111111111111  ngcode-darwin-amd64\n"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		defer srv.Close()
+
+		sums, err := downloadChecksums(context.Background(), srv.URL)
+		if err != nil {
+			t.Fatalf("downloadChecksums(): unexpected error: %v", err)
+		}
+		if _, stillPrefixed := sums["*ngcode-windows-amd64.exe"]; stillPrefixed {
+			t.Fatalf("key still has the leading asterisk: %v", sums)
+		}
+		if sums["ngcode-windows-amd64.exe"] != "aaaa000000000000000000000000000000000000000000000000000000000000" {
+			t.Fatalf("unexpected checksum for the windows asset: %q", sums["ngcode-windows-amd64.exe"])
+		}
+	})
 }
 
 // ---- checkWritePermission (tasks.md 3.3) ----
