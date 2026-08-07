@@ -57,3 +57,11 @@ export function SaveFile(arg1, arg2) {
 export function SaveFileAs(arg1) {
   return window['go']['main']['App']['SaveFileAs'](arg1);
 }
+
+export function UpdateAccept() {
+  return window['go']['main']['App']['UpdateAccept']();
+}
+
+export function UpdateDismiss() {
+  return window['go']['main']['App']['UpdateDismiss']();
+}
