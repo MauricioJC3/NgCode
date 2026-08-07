@@ -11,6 +11,11 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// version is injected at build time by CI via
+// `-ldflags "-X main.version=$TAG"` (see .github/workflows/release.yml).
+// Local/dev builds keep the "dev" fallback.
+var version = "dev"
+
 func main() {
 	// Create an instance of the app structure
 	app := NewApp()
