@@ -1,0 +1,6 @@
+.editor-host { flex: 1; min-width: 0; height: 100%; }
+.editor-host .cm-editor { height: 100%; }
+.editor-host .cm-scroller { overflow: auto; }
+.editor-host .cm-content { padding: 8px 0; }
+.editor-host .cm-gutters { border-right: none; }
+.editor-host .cm-focused { outline: none; }
