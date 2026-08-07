@@ -151,6 +151,7 @@ html, body {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 10px; padding: 24px 16px; text-align: center;
 }
+.sidebar-empty[hidden] { display: none; }
 .sidebar-empty p { margin: 0; font-size: 12.5px; color: var(--text-tertiary); }
 .open-folder-btn {
   font-size: 12.5px; padding: 6px 14px; border-radius: 4px;
@@ -222,6 +223,7 @@ html, body {
 .empty-state svg { width: 32px; height: 32px; opacity: .7; }
 .empty-state p { margin: 0; font-size: 13px; color: var(--text-secondary); }
 .empty-state span { font-size: 12px; }
+.empty-state[hidden] { display: none; }
 
 /* ---- statusbar ---- */
 .statusbar {
