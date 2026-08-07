@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,8 @@ type App struct {
 	ctx           context.Context
 	closeAnswerCh chan bool
 	lsp           *lspClient
+	version       string
+	updater       *updateState
 }
 
 // FileData is the content of a file loaded into the editor
@@ -30,15 +33,49 @@ type DirEntry struct {
 	IsDir bool
 }
 
-// NewApp creates a new App application struct
-func NewApp() *App {
-	return &App{closeAnswerCh: make(chan bool)}
+// NewApp creates a new App application struct. version is the build's
+// current version (injected via ldflags in CI, "dev" for local builds — see
+// main.go) and is compared against GitHub's latest release by the
+// background update check.
+func NewApp(version string) *App {
+	return &App{closeAnswerCh: make(chan bool), version: version}
 }
 
-// startup is called when the app starts. The context is saved
-// so we can call the runtime methods
+// startup is called when the app starts. The context is saved so we can
+// call the runtime methods. It also removes any leftover ".old" binary from
+// a previous Windows rename-dance swap and kicks off a non-blocking
+// background check for a newer release.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	if err := cleanupOldBinary(); err != nil {
+		runtime.LogError(ctx, "cleanupOldBinary: "+err.Error())
+	}
+
+	go a.checkForUpdates(ctx)
+}
+
+// checkForUpdates runs the background update check (updater.go) and, if a
+// newer release is available, stores it on a.updater and notifies the
+// frontend via the "update:available" event. A check error is logged only —
+// per spec, a failed check aborts silently to the user and simply retries
+// on the next launch (checkForUpdatesBackground already withholds the cache
+// timestamp update in that case).
+func (a *App) checkForUpdates(ctx context.Context) {
+	state, err := checkForUpdatesBackground(ctx, a.version)
+	if err != nil {
+		runtime.LogError(ctx, "checkForUpdatesBackground: "+err.Error())
+		return
+	}
+	if state == nil {
+		return
+	}
+
+	a.updater = state
+	runtime.EventsEmit(ctx, "update:available", UpdateInfo{
+		Version:        state.Version,
+		CurrentVersion: a.version,
+	})
 }
 
 // beforeClose asks the frontend whether it's safe to close and blocks until it answers,
@@ -224,4 +261,70 @@ func (a *App) LspHover(path string, line int, character int) (string, error) {
 		return "", err
 	}
 	return string(result), nil
+}
+
+// UpdateAccept runs the full accept flow for the pending update stored in
+// a.updater (populated by checkForUpdates): download the release asset,
+// verify its SHA256 against checksums.txt, probe write permission on the
+// install directory, then swap the running executable and relaunch.
+// performSwap is the literal last step — every earlier gate must pass
+// before anything destructive happens, so any error here leaves the
+// running executable untouched (spec: "Download and Checksum
+// Verification", "Permission-Aware Install"). The frontend surfaces a
+// non-nil error the same way every other bound method's error is
+// surfaced: console.error, no dedicated toast/error UI.
+func (a *App) UpdateAccept() error {
+	if a.updater == nil {
+		return fmt.Errorf("no update available to accept")
+	}
+	state := a.updater
+
+	assetPath, err := downloadAsset(a.ctx, state.AssetURL)
+	if err != nil {
+		return fmt.Errorf("download update: %w", err)
+	}
+	// No-op once performSwap has consumed/renamed assetPath away on the
+	// success path; cleans up the temp file on every earlier-return error.
+	defer os.Remove(assetPath)
+
+	checksums, err := downloadChecksums(a.ctx, state.ChecksumURL)
+	if err != nil {
+		return fmt.Errorf("download checksums: %w", err)
+	}
+
+	assetName, err := assetNameForPlatform()
+	if err != nil {
+		return err
+	}
+	wantHex, ok := checksums[assetName]
+	if !ok {
+		return fmt.Errorf("no checksum published for %s", assetName)
+	}
+	if err := verifyChecksum(assetPath, wantHex); err != nil {
+		return err
+	}
+
+	exe, err := executablePath()
+	if err != nil {
+		return err
+	}
+	if err := checkWritePermission(filepath.Dir(exe)); err != nil {
+		return fmt.Errorf("insufficient permission to install update, please reinstall manually: %w", err)
+	}
+
+	if err := performSwap(assetPath); err != nil {
+		return err
+	}
+
+	a.updater = nil
+	runtime.Quit(a.ctx)
+	return nil
+}
+
+// UpdateDismiss discards the pending update without persisting anything.
+// The update-check cadence cache (updater.go) is untouched, so per spec
+// there is no "remember dismiss" — the user is asked again on the next
+// successful background check.
+func (a *App) UpdateDismiss() {
+	a.updater = nil
 }

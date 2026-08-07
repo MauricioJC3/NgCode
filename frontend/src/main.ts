@@ -16,9 +16,11 @@ import { linter, forceLinting, type Diagnostic } from '@codemirror/lint';
 import {
   OpenFolder, ReadDir, ReadFile, SaveFile, ConfirmClose,
   LspStart, LspStop, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
+  UpdateAccept, UpdateDismiss,
 } from '../wailsjs/go/main/App';
 import type { main } from '../wailsjs/go/models';
 import { EventsOn } from '../wailsjs/runtime/runtime';
+import { handleUpdateAvailable, type UpdateInfo } from './update';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -626,6 +628,16 @@ async function handleCloseRequested() {
   const ok = await askConfirm(message);
   ConfirmClose(ok);
 }
+
+// ---- auto-update ----
+
+EventsOn('update:available', (payload: UpdateInfo) => {
+  void handleUpdateAvailable(payload, {
+    askConfirm,
+    updateAccept: UpdateAccept,
+    updateDismiss: UpdateDismiss,
+  });
+});
 
 // ---- file tree ----
 
