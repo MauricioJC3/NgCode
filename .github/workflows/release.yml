@@ -1,0 +1,162 @@
+name: Release
+
+# Tag-triggered build: pushing a `v*` tag builds signed-off, versioned,
+# checksummed binaries for Windows and macOS and publishes them as a
+# GitHub Release. See sdd/auto-update design for the asset naming contract
+# that updater.go (PR2) depends on byte-for-byte.
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  GO_VERSION: "1.25.0"
+  NODE_VERSION: "20"
+  WAILS_VERSION: "v2.13.0"
+
+jobs:
+  build:
+    name: Build (${{ matrix.asset_name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows/amd64
+            asset_name: ngcode-windows-amd64.exe
+            bin_path: build/bin/ngcode.exe
+            installer_name: ngcode-windows-amd64-installer.exe
+            installer_path: build/bin/ngcode-amd64-installer.exe
+          - os: macos-latest
+            platform: darwin/amd64
+            asset_name: ngcode-darwin-amd64
+            # wails packages macOS builds as an .app bundle; the raw
+            # executable lives inside Contents/MacOS (verified against
+            # wails/v2@v2.13.0 pkg/commands/build/packager.go).
+            bin_path: build/bin/ngcode.app/Contents/MacOS/ngcode
+          - os: macos-latest
+            platform: darwin/arm64
+            asset_name: ngcode-darwin-arm64
+            bin_path: build/bin/ngcode.app/Contents/MacOS/ngcode
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Wails CLI
+        shell: bash
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: npm ci --prefix frontend
+
+      - name: Derive tag and version
+        id: version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "product_version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Patch wails.json productVersion
+        shell: bash
+        run: |
+          jq '.info.productVersion = "${{ steps.version.outputs.product_version }}"' wails.json > wails.json.tmp
+          mv wails.json.tmp wails.json
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # -installscope user is the actual CLI switch wails' NSIS packager
+        # reads (see wailsapp/wails v2.13.0 cmd/wails/flags/build.go +
+        # pkg/commands/build/nsis_installer.go): it is what makes wails pass
+        # -DWAILS_INSTALL_SCOPE=user to makensis, which project.nsi then
+        # branches on. There is no such thing as a WAILS_INSTALL_SCOPE
+        # environment variable read by the wails CLI itself.
+        run: |
+          wails build -platform ${{ matrix.platform }} -nsis -installscope user \
+            -ldflags "-X main.version=${{ steps.version.outputs.tag }}"
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          wails build -platform ${{ matrix.platform }} \
+            -ldflags "-X main.version=${{ steps.version.outputs.tag }}"
+
+      - name: Rename binary to release asset name
+        shell: bash
+        run: cp "${{ matrix.bin_path }}" "${{ matrix.asset_name }}"
+
+      - name: Rename installer to release asset name
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cp "${{ matrix.installer_path }}" "${{ matrix.installer_name }}"
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          checksum() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1"
+            else
+              shasum -a 256 "$1"
+            fi
+          }
+          : > "checksums-${{ matrix.asset_name }}.txt"
+          checksum "${{ matrix.asset_name }}" >> "checksums-${{ matrix.asset_name }}.txt"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            checksum "${{ matrix.installer_name }}" >> "checksums-${{ matrix.asset_name }}.txt"
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.asset_name }}
+          path: |
+            ${{ matrix.asset_name }}
+            checksums-${{ matrix.asset_name }}.txt
+          if-no-files-found: error
+
+      - name: Upload installer artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.installer_name }}
+          path: ${{ matrix.installer_name }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Merge checksums
+        shell: bash
+        run: |
+          cd dist
+          cat checksums-*.txt > checksums.txt
+          rm checksums-*.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true

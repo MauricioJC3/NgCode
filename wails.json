@@ -9,5 +9,12 @@
   "author": {
     "name": "",
     "email": ""
+  },
+  "info": {
+    "companyName": "NgCode",
+    "productName": "ngcode",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright © 2026 NgCode",
+    "comments": "NgCode code editor"
   }
 }
