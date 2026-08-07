@@ -9,6 +9,14 @@ on:
     tags:
       - "v*"
 
+# The default GITHUB_TOKEN is read-only unless a workflow explicitly grants
+# write access — confirmed by a real tag push failing with "Resource not
+# accessible by integration" (403) on softprops/action-gh-release without
+# this. contents: write is the minimum scope that lets it create the
+# release and upload assets.
+permissions:
+  contents: write
+
 env:
   GO_VERSION: "1.25.0"
   NODE_VERSION: "20"
@@ -60,6 +68,27 @@ jobs:
       - name: Install frontend dependencies
         shell: bash
         run: npm ci --prefix frontend
+
+      # windows-latest does not ship NSIS/makensis by default. Without this,
+      # `wails build -nsis` only prints "Warning: Cannot create installer:
+      # makensis not found" and silently skips the installer instead of
+      # failing the build step itself — caught by actually pushing a test
+      # tag and watching the real CI run, not by any local check.
+      #
+      # Installing via choco alone isn't enough: it updates the machine's
+      # registry PATH, but the runner process (and the bash steps spawned
+      # from it) already has its environment loaded and doesn't pick that
+      # up mid-job — confirmed by a second real tag push that still hit
+      # "makensis not found" right after a successful `choco install nsis`.
+      # Appending NSIS's install dir to $GITHUB_PATH is the actual fix:
+      # that's the documented, supported way to extend PATH for every
+      # later step in the same job.
+      - name: Install NSIS (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install nsis -y
+          echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
 
       - name: Derive tag and version
         id: version
