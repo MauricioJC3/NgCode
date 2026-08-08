@@ -18,9 +18,10 @@ import (
 )
 
 type lspClient struct {
-	ctx   context.Context
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
+	ctx        context.Context
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	languageID string
 
 	writeMu sync.Mutex
 
@@ -30,6 +31,79 @@ type lspClient struct {
 
 	docMu   sync.Mutex
 	docVers map[string]int
+}
+
+// lspServerSpec describes how to launch the language server for one
+// language: the command Wails/Go spawns (must be on PATH), its args, the
+// LSP "languageId" it expects in textDocument/didOpen, and a human install
+// hint surfaced when the command isn't found — mirrors the message gopls
+// already gave for the Go-only version of this file.
+type lspServerSpec struct {
+	command     string
+	args        []string
+	languageID  string
+	installHint string
+}
+
+// lspServers is the language -> server registry. Markdown is deliberately
+// not here: there's no LSP with meaningfully better completion for it than
+// CodeMirror's built-in word completion, so it stays on that instead of
+// paying for a subprocess.
+var lspServers = map[string]lspServerSpec{
+	"go": {
+		command:     "gopls",
+		args:        []string{"serve"},
+		languageID:  "go",
+		installHint: "go install golang.org/x/tools/gopls@latest",
+	},
+	"typescript": {
+		command:    "typescript-language-server",
+		args:       []string{"--stdio"},
+		languageID: "typescript",
+		// typescript-language-server resolves TypeScript itself via Node
+		// module resolution from the workspace root — a global-only
+		// `typescript` install is NOT enough (confirmed: it fails
+		// initialize with "Could not find a valid TypeScript
+		// installation" even with `typescript` on PATH globally).
+		// `typescript` has to be a project dependency, AND pinned to the
+		// v5 line: an unpinned `npm install typescript` resolves to the
+		// new Go-based "TypeScript 7" compiler, whose package no longer
+		// ships lib/tsserver.js — confirmed by installing it and hitting
+		// this exact initialize failure again despite being a local dep.
+		installHint: "npm install -g typescript-language-server, then npm install --save-dev typescript@^5 inside the project you're editing",
+	},
+	"json": {
+		command:     "vscode-json-language-server",
+		args:        []string{"--stdio"},
+		languageID:  "json",
+		installHint: "npm install -g vscode-langservers-extracted",
+	},
+	"css": {
+		command:     "vscode-css-language-server",
+		args:        []string{"--stdio"},
+		languageID:  "css",
+		installHint: "npm install -g vscode-langservers-extracted",
+	},
+}
+
+// languageForPath maps a file's extension to the lspServers key backing it,
+// or "" if no language server is configured for that extension (markdown,
+// plain text, etc.) — the frontend has an identical mapping (lspLanguageFor
+// in main.ts) that MUST be kept in sync, since it decides when to even
+// attempt LspEnsureStarted.
+func languageForPath(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".go":
+		return "go"
+	case ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs":
+		return "typescript"
+	case ".json":
+		return "json"
+	case ".css":
+		return "css"
+	default:
+		return ""
+	}
 }
 
 type rpcMessage struct {
@@ -67,8 +141,8 @@ func fromFileURI(uri string) string {
 	return filepath.FromSlash(p)
 }
 
-func startLSPClient(ctx context.Context, rootPath string) (*lspClient, error) {
-	cmd := exec.Command("gopls", "serve")
+func startLSPClient(ctx context.Context, rootPath string, spec lspServerSpec) (*lspClient, error) {
+	cmd := exec.Command(spec.command, spec.args...)
 	hideConsoleWindow(cmd)
 
 	stdin, err := cmd.StdinPipe()
@@ -81,15 +155,16 @@ func startLSPClient(ctx context.Context, rootPath string) (*lspClient, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("gopls not found on PATH (install with: go install golang.org/x/tools/gopls@latest): %w", err)
+		return nil, fmt.Errorf("%s not found on PATH (install with: %s): %w", spec.command, spec.installHint, err)
 	}
 
 	c := &lspClient{
-		ctx:     ctx,
-		cmd:     cmd,
-		stdin:   stdin,
-		pending: make(map[int64]chan rpcMessage),
-		docVers: make(map[string]int),
+		ctx:        ctx,
+		cmd:        cmd,
+		stdin:      stdin,
+		languageID: spec.languageID,
+		pending:    make(map[int64]chan rpcMessage),
+		docVers:    make(map[string]int),
 	}
 	go c.readLoop(bufio.NewReader(stdout))
 
@@ -267,7 +342,7 @@ func (c *lspClient) didOpen(path, content string) error {
 	return c.notify("textDocument/didOpen", map[string]interface{}{
 		"textDocument": map[string]interface{}{
 			"uri":        toFileURI(path),
-			"languageId": "go",
+			"languageId": c.languageID,
 			"version":    1,
 			"text":       content,
 		},

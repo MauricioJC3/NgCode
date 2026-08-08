@@ -14,9 +14,15 @@ import (
 
 // App struct
 type App struct {
-	ctx       context.Context
-	lspMu     sync.RWMutex
-	lsp       *lspClient
+	ctx context.Context
+
+	// lspClients holds at most one running client per language (keyed by
+	// the lspServers registry key in lsp.go — "go", "typescript", "json",
+	// "css"), started lazily the first time a file of that language is
+	// opened (see LspEnsureStarted).
+	lspMu      sync.RWMutex
+	lspClients map[string]*lspClient
+
 	updaterMu sync.Mutex
 	version   string
 	updater   *updateState
@@ -40,7 +46,7 @@ type DirEntry struct {
 // main.go) and is compared against GitHub's latest release by the
 // background update check.
 func NewApp(version string) *App {
-	return &App{version: version}
+	return &App{lspClients: make(map[string]*lspClient), version: version}
 }
 
 // startup is called when the app starts. The context is saved so we can
@@ -106,11 +112,12 @@ func (a *App) beforeClose(ctx context.Context) bool {
 // ForceQuit is called by the frontend once it has confirmed the app is safe
 // to close (no unsaved changes, or the user accepted losing them). It must
 // NOT go through runtime.Quit()/beforeClose again — that would just veto
-// itself the same way. Stops any running gopls process first: Windows does
-// not kill child processes when their parent exits, so skipping this would
-// leak an orphaned gopls.exe on every close.
+// itself the same way. Stops every running language server first: Windows
+// does not kill child processes when their parent exits, so skipping this
+// would leak an orphaned gopls.exe/typescript-language-server.exe/etc. on
+// every close.
 func (a *App) ForceQuit() {
-	if client := a.currentLSP(); client != nil {
+	for _, client := range a.stopAllLSP() {
 		_ = client.stop()
 	}
 	os.Exit(0)
@@ -286,60 +293,88 @@ func (a *App) MoveEntry(srcPath string, destDir string) (string, error) {
 	return destPath, nil
 }
 
-// currentLSP returns the active LSP client, if any, under lspMu — the single
-// point where a.lsp is read so every caller sees a consistent snapshot
-// instead of racing LspStart/LspStop on the raw field.
-func (a *App) currentLSP() *lspClient {
+// currentLSP returns the running client for lang, if any, under lspMu — the
+// single point where lspClients is read so every caller sees a consistent
+// snapshot instead of racing LspEnsureStarted/LspStopAll on the raw map.
+func (a *App) currentLSP(lang string) *lspClient {
 	a.lspMu.RLock()
 	defer a.lspMu.RUnlock()
-	return a.lsp
+	return a.lspClients[lang]
 }
 
-// LspStart launches gopls rooted at rootPath, replacing any client already running
-func (a *App) LspStart(rootPath string) error {
+// stopAllLSP atomically clears lspClients and returns the clients that were
+// running, leaving the actual (slow, per-process) shutdown to the caller.
+// Shared by LspStopAll and ForceQuit so both go through the same swap.
+func (a *App) stopAllLSP() []*lspClient {
 	a.lspMu.Lock()
-	old := a.lsp
-	a.lsp = nil
+	clients := a.lspClients
+	a.lspClients = make(map[string]*lspClient)
 	a.lspMu.Unlock()
-	if old != nil {
-		_ = old.stop()
+
+	out := make([]*lspClient, 0, len(clients))
+	for _, c := range clients {
+		out = append(out, c)
+	}
+	return out
+}
+
+// LspEnsureStarted makes sure a language server for path's language is
+// running, rooted at rootPath, starting one via the lspServers registry
+// (lsp.go) if none is running yet. No-op for a path whose extension isn't
+// backed by any configured server (languageForPath returns ""). Servers are
+// started lazily, on first file-open of their language, rather than eagerly
+// per workspace — avoids spawning e.g. typescript-language-server for a
+// workspace nobody is editing TypeScript in.
+func (a *App) LspEnsureStarted(rootPath string, path string) error {
+	lang := languageForPath(path)
+	if lang == "" {
+		return nil
 	}
 
-	client, err := startLSPClient(a.ctx, rootPath)
+	a.lspMu.RLock()
+	_, running := a.lspClients[lang]
+	a.lspMu.RUnlock()
+	if running {
+		return nil
+	}
+
+	spec, ok := lspServers[lang]
+	if !ok {
+		return nil
+	}
+	client, err := startLSPClient(a.ctx, rootPath, spec)
 	if err != nil {
 		return err
 	}
 
 	a.lspMu.Lock()
-	a.lsp = client
+	a.lspClients[lang] = client
 	a.lspMu.Unlock()
 	return nil
 }
 
-// LspStop shuts down the running gopls client, if any
-func (a *App) LspStop() error {
-	a.lspMu.Lock()
-	client := a.lsp
-	a.lsp = nil
-	a.lspMu.Unlock()
-	if client == nil {
-		return nil
+// LspStopAll shuts down every running language server — called when
+// switching workspace root, since every client is rooted at the folder that
+// was open when it started.
+func (a *App) LspStopAll() error {
+	for _, client := range a.stopAllLSP() {
+		_ = client.stop()
 	}
-	return client.stop()
+	return nil
 }
 
-// LspDidOpen notifies gopls that path is now open with the given content
+// LspDidOpen notifies path's language server that it's now open with the given content
 func (a *App) LspDidOpen(path string, content string) error {
-	client := a.currentLSP()
+	client := a.currentLSP(languageForPath(path))
 	if client == nil {
 		return nil
 	}
 	return client.didOpen(path, content)
 }
 
-// LspDidChange notifies gopls of the current full content of path
+// LspDidChange notifies path's language server of its current full content
 func (a *App) LspDidChange(path string, content string) error {
-	client := a.currentLSP()
+	client := a.currentLSP(languageForPath(path))
 	if client == nil {
 		return nil
 	}
@@ -350,7 +385,7 @@ func (a *App) LspDidChange(path string, content string) error {
 // Returns the raw LSP JSON result as a string (json.RawMessage confuses the
 // Wails binding generator, which doesn't know that type and emits a broken import).
 func (a *App) LspCompletion(path string, line int, character int) (string, error) {
-	client := a.currentLSP()
+	client := a.currentLSP(languageForPath(path))
 	if client == nil {
 		return "", nil
 	}
@@ -365,7 +400,7 @@ func (a *App) LspCompletion(path string, line int, character int) (string, error
 // 0-indexed line/character position. Returns the raw LSP JSON result as a
 // string, same reasoning as LspCompletion.
 func (a *App) LspDefinition(path string, line int, character int) (string, error) {
-	client := a.currentLSP()
+	client := a.currentLSP(languageForPath(path))
 	if client == nil {
 		return "", nil
 	}
@@ -380,7 +415,7 @@ func (a *App) LspDefinition(path string, line int, character int) (string, error
 // line/character position. Returns the raw LSP JSON result as a string,
 // same reasoning as LspCompletion.
 func (a *App) LspHover(path string, line int, character int) (string, error) {
-	client := a.currentLSP()
+	client := a.currentLSP(languageForPath(path))
 	if client == nil {
 		return "", nil
 	}

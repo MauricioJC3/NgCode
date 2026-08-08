@@ -30,16 +30,16 @@ export function LspDidOpen(arg1, arg2) {
   return window['go']['main']['App']['LspDidOpen'](arg1, arg2);
 }
 
+export function LspEnsureStarted(arg1, arg2) {
+  return window['go']['main']['App']['LspEnsureStarted'](arg1, arg2);
+}
+
 export function LspHover(arg1, arg2, arg3) {
   return window['go']['main']['App']['LspHover'](arg1, arg2, arg3);
 }
 
-export function LspStart(arg1) {
-  return window['go']['main']['App']['LspStart'](arg1);
-}
-
-export function LspStop() {
-  return window['go']['main']['App']['LspStop']();
+export function LspStopAll() {
+  return window['go']['main']['App']['LspStopAll']();
 }
 
 export function MoveEntry(arg1, arg2) {

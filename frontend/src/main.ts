@@ -16,7 +16,7 @@ import { linter, forceLinting, type Diagnostic } from '@codemirror/lint';
 import { search, searchKeymap } from '@codemirror/search';
 import {
   OpenFolder, ReadDir, ReadFile, SaveFile, ForceQuit, CreateFile, CreateFolder, MoveEntry,
-  LspStart, LspStop, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
+  LspEnsureStarted, LspStopAll, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
   UpdateAccept, UpdateDismiss,
 } from '../wailsjs/go/main/App';
 import type { main } from '../wailsjs/go/models';
@@ -200,9 +200,36 @@ const editorTheme = EditorView.theme({
   '&.cm-focused': { outline: 'none' },
 });
 
-// ---- LSP (Go / gopls only, for now) ----
+// ---- LSP (multi-language: gopls, typescript-language-server, vscode-json/css-language-server) ----
 
-let lspActive = false;
+// Mirrors the Go side's languageForPath (app.go/lsp.go) — MUST stay in sync,
+// since it decides when LspEnsureStarted is even attempted. Markdown is
+// deliberately absent: no LSP here is worth a subprocess over CodeMirror's
+// built-in word completion for it.
+const LSP_LANGUAGES: Record<string, string> = {
+  go: 'go',
+  ts: 'typescript', tsx: 'typescript', js: 'typescript', jsx: 'typescript', mjs: 'typescript', cjs: 'typescript',
+  json: 'json',
+  css: 'css',
+};
+
+function lspLanguageFor(path: string): string | null {
+  return LSP_LANGUAGES[extOf(path)] ?? null;
+}
+
+// lspActiveLangs tracks which languages have a running server *in this
+// session* (LspEnsureStarted has already been tried for them, successfully
+// or not — see openFileFromTree). Cleared on every openWorkspace(), since
+// switching folders stops every server (LspStopAll) and the next one has to
+// be re-started rooted at the new folder.
+const lspActiveLangs = new Set<string>();
+
+function lspActiveFor(path: string | null): boolean {
+  if (!path) return false;
+  const lang = lspLanguageFor(path);
+  return lang !== null && lspActiveLangs.has(lang);
+}
+
 const diagnosticsByPath = new Map<string, LspDiagnostic[]>();
 
 interface LspDiagnostic {
@@ -230,7 +257,7 @@ function lspDiagnosticsForDoc(doc: Text, raw: LspDiagnostic[]): Diagnostic[] {
   return out;
 }
 
-const goLinter = linter((view) => {
+const lspLinter = linter((view) => {
   if (!activePath) return [];
   const raw = diagnosticsByPath.get(activePath);
   return raw && raw.length ? lspDiagnosticsForDoc(view.state.doc, raw) : [];
@@ -242,8 +269,8 @@ const COMPLETION_KIND: Record<number, string> = {
   14: 'keyword', 21: 'constant', 22: 'type',
 };
 
-async function goCompletionSource(context: CompletionContext): Promise<CompletionResult | null> {
-  if (!activePath || extOf(activePath) !== 'go' || !lspActive) return null;
+async function lspCompletionSource(context: CompletionContext): Promise<CompletionResult | null> {
+  if (!activePath || !lspActiveFor(activePath)) return null;
   const word = context.matchBefore(/\w*/);
   if (!word || (word.from === word.to && !context.explicit)) return null;
 
@@ -272,7 +299,7 @@ async function goCompletionSource(context: CompletionContext): Promise<Completio
   return { from: word.from, options };
 }
 
-const goCompletion = autocompletion({ override: [goCompletionSource] });
+const lspCompletion = autocompletion({ override: [lspCompletionSource] });
 
 // LSP paths come back as file:// URIs; this is the frontend counterpart of the
 // backend's fromFileURI. Forward slashes are left as-is (Go's os package accepts
@@ -294,8 +321,8 @@ function hoverContentsToText(contents: LspHoverContent | LspHoverContent[] | und
   return contents.value ?? '';
 }
 
-const goHover = hoverTooltip(async (view, pos): Promise<Tooltip | null> => {
-  if (!activePath || extOf(activePath) !== 'go' || !lspActive) return null;
+const lspHover = hoverTooltip(async (view, pos): Promise<Tooltip | null> => {
+  if (!activePath || !lspActiveFor(activePath)) return null;
   const line = view.state.doc.lineAt(pos);
   let raw: string;
   try {
@@ -366,10 +393,10 @@ async function goToDefinitionAt(view: EditorView, pos: number) {
   placeCursorAt(editor, range.start.line, range.start.character);
 }
 
-const goDefinitionClick = EditorView.domEventHandlers({
+const lspDefinitionClick = EditorView.domEventHandlers({
   mousedown(event, view) {
     if (!(event.ctrlKey || event.metaKey)) return false;
-    if (!activePath || extOf(activePath) !== 'go' || !lspActive) return false;
+    if (!activePath || !lspActiveFor(activePath)) return false;
     const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
     if (pos == null) return false;
     event.preventDefault();
@@ -380,7 +407,7 @@ const goDefinitionClick = EditorView.domEventHandlers({
 
 let lspChangeTimer: number | undefined;
 function scheduleLspDidChange() {
-  if (!lspActive || !activePath || extOf(activePath) !== 'go') return;
+  if (!activePath || !lspActiveFor(activePath)) return;
   window.clearTimeout(lspChangeTimer);
   lspChangeTimer = window.setTimeout(() => {
     if (!activePath) return;
@@ -400,7 +427,7 @@ function onEditorUpdate(update: ViewUpdate) {
 }
 
 function buildState(content: string, path: string): EditorState {
-  const lspExtensions = lspActive && extOf(path) === 'go' ? [goCompletion, goLinter, goHover, goDefinitionClick] : [];
+  const lspExtensions = lspActiveFor(path) ? [lspCompletion, lspLinter, lspHover, lspDefinitionClick] : [];
   return EditorState.create({
     doc: content,
     extensions: [
@@ -528,7 +555,22 @@ async function openFileFromTree(path: string) {
       console.error(err);
       return;
     }
-    if (lspActive && extOf(path) === 'go') {
+
+    // Lazily start path's language server on first open of that language in
+    // this workspace, rather than eagerly at openWorkspace() time — avoids
+    // spawning e.g. typescript-language-server for a workspace nobody edits
+    // TypeScript in. buildState() (called from activateTab below) reads
+    // lspActiveLangs synchronously, so this must resolve before that.
+    const lang = lspLanguageFor(path);
+    if (lang && workspaceRoot && !lspActiveLangs.has(lang)) {
+      try {
+        await LspEnsureStarted(workspaceRoot, path);
+        lspActiveLangs.add(lang);
+      } catch (err) {
+        console.error(`lsp start failed for ${lang}, continuing without it`, err);
+      }
+    }
+    if (lspActiveFor(path)) {
       LspDidOpen(path, tab.content).catch((err) => console.error(err));
     }
   }
@@ -853,6 +895,13 @@ async function openWorkspace() {
   }
   if (!root) return;
 
+  // Every running language server is rooted at whatever folder was open
+  // when it started; switching folders makes all of them stale. Servers
+  // for the new folder are started lazily as files are opened (see
+  // openFileFromTree), not eagerly here.
+  lspActiveLangs.clear();
+  LspStopAll().catch((err) => console.error(err));
+
   try {
     const entries = await ReadDir(root);
     treeEl.innerHTML = '';
@@ -863,20 +912,6 @@ async function openWorkspace() {
     workspaceNameEl.textContent = fileName(root).toUpperCase();
     treeRootEl.hidden = false;
     sidebarEmptyEl.hidden = true;
-
-    const hasGoMod = entries.some((e) => !e.IsDir && e.Name === 'go.mod');
-    if (hasGoMod) {
-      try {
-        await LspStart(root);
-        lspActive = true;
-      } catch (err) {
-        console.error('lsp start failed, continuing without it', err);
-        lspActive = false;
-      }
-    } else if (lspActive) {
-      LspStop().catch((err) => console.error(err));
-      lspActive = false;
-    }
   } catch (err) {
     console.error(err);
   }

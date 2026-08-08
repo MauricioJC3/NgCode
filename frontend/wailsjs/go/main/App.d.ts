@@ -16,11 +16,11 @@ export function LspDidChange(arg1:string,arg2:string):Promise<void>;
 
 export function LspDidOpen(arg1:string,arg2:string):Promise<void>;
 
+export function LspEnsureStarted(arg1:string,arg2:string):Promise<void>;
+
 export function LspHover(arg1:string,arg2:number,arg3:number):Promise<string>;
 
-export function LspStart(arg1:string):Promise<void>;
-
-export function LspStop():Promise<void>;
+export function LspStopAll():Promise<void>;
 
 export function MoveEntry(arg1:string,arg2:string):Promise<string>;
 
