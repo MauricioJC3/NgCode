@@ -23,6 +23,14 @@ type App struct {
 	lspMu      sync.RWMutex
 	lspClients map[string]*lspClient
 
+	// searchGen is the generation counter for project-wide search (see
+	// search.go): bumped by every SearchInWorkspace/SearchCancel call so a
+	// running runSearch goroutine can detect it's been superseded and stop
+	// emitting results — same generation-guard pattern as lspClients above,
+	// but a counter instead of a map since only one search matters at a time.
+	searchMu  sync.Mutex
+	searchGen int64
+
 	updaterMu sync.Mutex
 	version   string
 	updater   *updateState
@@ -117,6 +125,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 // would leak an orphaned gopls.exe/typescript-language-server.exe/etc. on
 // every close.
 func (a *App) ForceQuit() {
+	a.SearchCancel()
 	for _, client := range a.stopAllLSP() {
 		_ = client.stop()
 	}

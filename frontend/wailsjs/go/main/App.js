@@ -70,6 +70,14 @@ export function SaveFileAs(arg1) {
   return window['go']['main']['App']['SaveFileAs'](arg1);
 }
 
+export function SearchCancel() {
+  return window['go']['main']['App']['SearchCancel']();
+}
+
+export function SearchInWorkspace(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SearchInWorkspace'](arg1, arg2, arg3);
+}
+
 export function UpdateAccept() {
   return window['go']['main']['App']['UpdateAccept']();
 }
