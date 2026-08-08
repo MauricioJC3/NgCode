@@ -834,6 +834,7 @@ async function renameEntry(path: string) {
 
   const parent = dirOf(path) || workspaceRoot;
   try {
+    cancelSearch();
     const newPath = await RenameEntry(path, newName, workspaceRoot);
     remapTabPaths(path, newPath);
   } catch (err) {
@@ -859,6 +860,7 @@ async function deleteEntry(path: string, isFolder: boolean) {
 
   const parent = dirOf(path) || workspaceRoot;
   try {
+    cancelSearch();
     await DeleteEntry(path, workspaceRoot);
   } catch (err) {
     console.error(err);
