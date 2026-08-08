@@ -6,6 +6,8 @@ export function CreateFile(arg1:string,arg2:string):Promise<string>;
 
 export function CreateFolder(arg1:string,arg2:string):Promise<string>;
 
+export function DeleteEntry(arg1:string,arg2:string):Promise<void>;
+
 export function ForceQuit():Promise<void>;
 
 export function LspCompletion(arg1:string,arg2:number,arg3:number):Promise<string>;
@@ -31,6 +33,8 @@ export function OpenFolder():Promise<string>;
 export function ReadDir(arg1:string):Promise<Array<main.DirEntry>>;
 
 export function ReadFile(arg1:string):Promise<string>;
+
+export function RenameEntry(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function SaveFile(arg1:string,arg2:string):Promise<void>;
 

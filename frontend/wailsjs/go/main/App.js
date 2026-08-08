@@ -10,6 +10,10 @@ export function CreateFolder(arg1, arg2) {
   return window['go']['main']['App']['CreateFolder'](arg1, arg2);
 }
 
+export function DeleteEntry(arg1, arg2) {
+  return window['go']['main']['App']['DeleteEntry'](arg1, arg2);
+}
+
 export function ForceQuit() {
   return window['go']['main']['App']['ForceQuit']();
 }
@@ -60,6 +64,10 @@ export function ReadDir(arg1) {
 
 export function ReadFile(arg1) {
   return window['go']['main']['App']['ReadFile'](arg1);
+}
+
+export function RenameEntry(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RenameEntry'](arg1, arg2, arg3);
 }
 
 export function SaveFile(arg1, arg2) {

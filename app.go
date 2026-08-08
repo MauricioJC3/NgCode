@@ -270,6 +270,16 @@ func moveOrRename(srcPath string, destPath string) (string, error) {
 	return destPath, nil
 }
 
+// isWorkspaceRoot reports whether path refers to the same location as
+// workspaceRoot, after cleaning both (trailing slashes, "..", relative
+// segments). Used as a per-call guard on DeleteEntry/RenameEntry — matches
+// the existing LspEnsureStarted/SearchInWorkspace convention of passing
+// workspaceRoot per call instead of storing it on App (design: "Workspace-
+// root guard state").
+func isWorkspaceRoot(path string, workspaceRoot string) bool {
+	return filepath.Clean(path) == filepath.Clean(workspaceRoot)
+}
+
 // MoveEntry moves the file or folder at srcPath into destDir (keeping its
 // base name) and returns the new path — backs drag-and-drop in the file
 // tree. Rejects moving a folder into itself or one of its own descendants
@@ -304,6 +314,42 @@ func (a *App) MoveEntry(srcPath string, destDir string) (string, error) {
 	}
 
 	return moveOrRename(srcPath, destPath)
+}
+
+// DeleteEntry permanently removes the file or folder at path — backs the
+// explorer's context-menu Delete item and Delete key. Uses os.RemoveAll for
+// both files and folders (RemoveAll on a file behaves identically to
+// os.Remove, so this is one code path rather than branching on IsDir —
+// design: "Delete semantics"). Rejects deleting the workspace root itself.
+func (a *App) DeleteEntry(path string, workspaceRoot string) error {
+	if isWorkspaceRoot(path, workspaceRoot) {
+		return fmt.Errorf("cannot delete the workspace root")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	return os.RemoveAll(path)
+}
+
+// RenameEntry renames the file or folder at oldPath to newName, keeping it
+// in the same parent folder, and returns the new full path — backs the
+// explorer's context-menu Rename item and F2 key. Reuses moveOrRename for
+// the collision-check + os.Rename tail (shared with MoveEntry). Note:
+// remapping open tab paths for a renamed folder is a frontend concern, not
+// this method's — RenameEntry only returns the new path.
+func (a *App) RenameEntry(oldPath string, newName string, workspaceRoot string) (string, error) {
+	if err := validEntryName(newName); err != nil {
+		return "", err
+	}
+	if isWorkspaceRoot(oldPath, workspaceRoot) {
+		return "", fmt.Errorf("cannot rename the workspace root")
+	}
+	if newName == filepath.Base(oldPath) {
+		return "", fmt.Errorf("already named that")
+	}
+
+	destPath := filepath.Join(filepath.Dir(oldPath), newName)
+	return moveOrRename(oldPath, destPath)
 }
 
 // currentLSP returns the running client for lang, if any, under lspMu — the
