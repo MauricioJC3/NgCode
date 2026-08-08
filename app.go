@@ -14,13 +14,12 @@ import (
 
 // App struct
 type App struct {
-	ctx           context.Context
-	closeAnswerCh chan bool
-	lspMu         sync.RWMutex
-	lsp           *lspClient
-	updaterMu     sync.Mutex
-	version       string
-	updater       *updateState
+	ctx       context.Context
+	lspMu     sync.RWMutex
+	lsp       *lspClient
+	updaterMu sync.Mutex
+	version   string
+	updater   *updateState
 }
 
 // FileData is the content of a file loaded into the editor
@@ -41,7 +40,7 @@ type DirEntry struct {
 // main.go) and is compared against GitHub's latest release by the
 // background update check.
 func NewApp(version string) *App {
-	return &App{closeAnswerCh: make(chan bool), version: version}
+	return &App{version: version}
 }
 
 // startup is called when the app starts. The context is saved so we can
@@ -83,24 +82,38 @@ func (a *App) checkForUpdates(ctx context.Context) {
 	})
 }
 
-// beforeClose asks the frontend whether it's safe to close and blocks until it answers,
-// since only the frontend knows which tabs have unsaved changes
+// beforeClose always vetoes the native window close (returns true) and asks
+// the frontend, via an event, whether it's actually safe to close — only the
+// frontend knows which tabs have unsaved changes.
+//
+// It must NEVER block waiting for that answer. Per Wails v2's Windows
+// frontend (mainWindow.OnClose().Bind(...) -> f.Quit() -> OnBeforeClose),
+// this runs SYNCHRONOUSLY on the same OS thread that pumps the window's
+// message loop — the thread WebView2 itself needs to deliver the frontend's
+// JS->Go round trip (the ForceQuit call below) back into this process. A
+// version of this that blocked on a channel waiting for that round trip
+// (the previous implementation) therefore self-deadlocked on every close:
+// the UI thread can't process the incoming call while it's stuck waiting
+// for it. That surfaced as Windows reporting the app "not responding" on
+// every single close, not just the update-related case that first exposed
+// it. ForceQuit is what actually terminates the process, once the frontend
+// has decided it's safe to.
 func (a *App) beforeClose(ctx context.Context) bool {
 	runtime.EventsEmit(ctx, "app:close-requested")
-	shouldClose := <-a.closeAnswerCh
-	return !shouldClose
+	return true
 }
 
-// ConfirmClose answers a pending close request raised via the app:close-requested event
-func (a *App) ConfirmClose(shouldClose bool) {
-	a.closeAnswerCh <- shouldClose
-}
-
-// shutdown stops any running gopls process once the window is actually closing
-func (a *App) shutdown(ctx context.Context) {
+// ForceQuit is called by the frontend once it has confirmed the app is safe
+// to close (no unsaved changes, or the user accepted losing them). It must
+// NOT go through runtime.Quit()/beforeClose again — that would just veto
+// itself the same way. Stops any running gopls process first: Windows does
+// not kill child processes when their parent exits, so skipping this would
+// leak an orphaned gopls.exe on every close.
+func (a *App) ForceQuit() {
 	if client := a.currentLSP(); client != nil {
 		_ = client.stop()
 	}
+	os.Exit(0)
 }
 
 // OpenFile prompts the user to pick a file and returns its content
@@ -397,18 +410,12 @@ func (a *App) UpdateAccept() error {
 
 	// performSwap already renamed the new binary into place and launched it
 	// as a separate process (relaunch, updater.go) — the replacement is
-	// already running by this point. runtime.Quit(a.ctx) would go through
-	// Wails' normal close negotiation (Frontend.Quit calls OnBeforeClose —
-	// our beforeClose — SYNCHRONOUSLY on this same goroutine, per Wails v2's
-	// windows frontend source), which emits "app:close-requested" and blocks
-	// waiting for the frontend to round-trip a ConfirmClose call. That
-	// round trip has nothing left to confirm (the decision was already made
-	// by accepting the update) and only adds a window where this
-	// still-shutting-down process and the freshly-launched one contend for
-	// the same default WebView2 profile directory — observed in practice as
-	// Windows reporting the app as "not responding" during this exact
-	// window. os.Exit skips that negotiation entirely: the new process is
-	// already up, so the old one just needs to get out of the way.
+	// already running by this point, so there's nothing left to negotiate.
+	// os.Exit (not runtime.Quit) matches ForceQuit's reasoning below: get
+	// out of the way immediately instead of going through Wails' close
+	// flow, which would otherwise leave this still-shutting-down process
+	// and the freshly-launched one contending for the same default
+	// WebView2 profile directory.
 	os.Exit(0)
 	return nil
 }

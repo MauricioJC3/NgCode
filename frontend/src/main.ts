@@ -14,7 +14,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { autocompletion, type CompletionContext, type CompletionResult, type Completion } from '@codemirror/autocomplete';
 import { linter, forceLinting, type Diagnostic } from '@codemirror/lint';
 import {
-  OpenFolder, ReadDir, ReadFile, SaveFile, ConfirmClose, CreateFile, CreateFolder,
+  OpenFolder, ReadDir, ReadFile, SaveFile, ForceQuit, CreateFile, CreateFolder,
   LspStart, LspStop, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
   UpdateAccept, UpdateDismiss,
 } from '../wailsjs/go/main/App';
@@ -657,14 +657,14 @@ EventsOn('app:close-requested', () => {
 async function handleCloseRequested() {
   const dirtyTabs = tabs.filter((t) => t.dirty);
   if (dirtyTabs.length === 0) {
-    ConfirmClose(true);
+    ForceQuit();
     return;
   }
   const message = dirtyTabs.length === 1
     ? `Hay cambios sin guardar en ${fileName(dirtyTabs[0].path)}. ¿Cerrar de todos modos?`
     : `Hay ${dirtyTabs.length} archivos con cambios sin guardar. ¿Cerrar de todos modos?`;
   const ok = await askConfirm(message);
-  ConfirmClose(ok);
+  if (ok) ForceQuit();
 }
 
 // ---- auto-update ----
