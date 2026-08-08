@@ -27,6 +27,10 @@ import {
   debounce, nextGeneration, isCurrentGeneration, groupMatchesByFile, trackTruncatedFile,
   type SearchSession, type SearchMatch, type SearchResultBatch, type SearchDone,
 } from './search';
+import {
+  normalizeEditValue, shouldDiscardEdit,
+  type InlineEditMode, type ActiveEdit,
+} from './inline-edit';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -760,6 +764,12 @@ const treeRootEl = document.getElementById('tree-root')!;
 const workspaceNameEl = document.getElementById('workspace-name')!;
 const sidebarEmptyEl = document.getElementById('sidebar-empty')!;
 
+// activeEdit tracks the single live inline edit (Create File/Folder or
+// Rename) across the whole tree — at most one can be live at a time. Checked
+// by refreshDir and toggleFolder's rebuild branch so a directory rebuild
+// discards a stale edit rather than orphaning its input/listeners.
+let activeEdit: ActiveEdit | null = null;
+
 // ---- drag-and-drop move ----
 
 function makeDraggable(row: HTMLDivElement, path: string) {
@@ -827,21 +837,28 @@ async function moveEntryTo(srcPath: string, destDir: string) {
   }
 }
 
-async function renameEntry(path: string) {
+function renameEntry(row: HTMLDivElement, path: string) {
   if (!workspaceRoot) return;
-  const newName = window.prompt('Nuevo nombre:', fileName(path))?.trim();
-  if (!newName) return;
-
   const parent = dirOf(path) || workspaceRoot;
-  try {
-    cancelSearch();
-    const newPath = await RenameEntry(path, newName, workspaceRoot);
-    remapTabPaths(path, newPath);
-  } catch (err) {
-    console.error(err);
-    window.alert(`No se pudo renombrar: ${err}`);
-  }
-  await refreshDir(parent);
+
+  startInlineEdit(row, {
+    mode: 'rename',
+    dirPath: parent,
+    initialValue: fileName(path),
+    onCommit: async (value) => {
+      try {
+        cancelSearch();
+        const newPath = await RenameEntry(path, value, workspaceRoot!);
+        remapTabPaths(path, newPath);
+        await refreshDir(parent);
+        return true;
+      } catch (err) {
+        console.error(err);
+        window.alert(`No se pudo renombrar: ${err}`);
+        return false;
+      }
+    },
+  });
 }
 
 async function deleteEntry(path: string, isFolder: boolean) {
@@ -886,7 +903,7 @@ function createFileRow(entry: main.DirEntry, depth: number): HTMLDivElement {
   row.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
     else if (e.key === 'Delete') { e.preventDefault(); void deleteEntry(entry.Path, false); }
-    else if (e.key === 'F2') { e.preventDefault(); void renameEntry(entry.Path); }
+    else if (e.key === 'F2') { e.preventDefault(); renameEntry(row, entry.Path); }
   });
   makeDraggable(row, entry.Path);
   return row;
@@ -913,7 +930,7 @@ function createFolderRow(entry: main.DirEntry, depth: number): HTMLDivElement {
   row.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
     else if (e.key === 'Delete') { e.preventDefault(); void deleteEntry(entry.Path, true); }
-    else if (e.key === 'F2') { e.preventDefault(); void renameEntry(entry.Path); }
+    else if (e.key === 'F2') { e.preventDefault(); renameEntry(row, entry.Path); }
   });
   makeDraggable(row, entry.Path);
   makeDropTarget(row, () => entry.Path);
@@ -935,6 +952,10 @@ async function toggleFolder(row: HTMLDivElement, path: string, depth: number) {
 
   try {
     const entries = await ReadDir(path);
+    if (shouldDiscardEdit(activeEdit, path)) {
+      activeEdit!.discard();
+      activeEdit = null;
+    }
     const container = document.createElement('div');
     container.dataset.parent = path;
     entries.forEach((entry) => {
@@ -1180,7 +1201,167 @@ function findFolderRow(dirPath: string): HTMLDivElement | null {
   return null;
 }
 
+// findTreeRow looks up any row (file or folder) by its full path — used by
+// Rename, which needs the row itself (not just folder rows) to swap its
+// label span for an inline-edit input in place.
+function findTreeRow(path: string): HTMLDivElement | null {
+  const rows = treeEl.querySelectorAll<HTMLDivElement>('.tree-row[data-path]');
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].dataset.path === path) return rows[i];
+  }
+  return null;
+}
+
+// buildPlaceholderRow builds a transient, listener-free tree row for an
+// in-progress Create File/Folder — it hosts the inline-edit input until the
+// name is committed (at which point refreshDir replaces it with a real row
+// built from the backend's response) or discarded (row.remove()).
+function buildPlaceholderRow(mode: 'create-file' | 'create-folder', depth: number): HTMLDivElement {
+  const row = document.createElement('div');
+  row.style.setProperty('--d', String(depth));
+  if (mode === 'create-folder') {
+    row.className = 'tree-row';
+    row.dataset.kind = 'folder';
+    row.innerHTML = `${ICON_CHEVRON}${ICON_FOLDER}`;
+    row.querySelector('.chev')!.classList.add('is-closed');
+  } else {
+    row.className = 'tree-row is-file';
+    row.innerHTML = ICON_FILE;
+  }
+  row.appendChild(document.createElement('span'));
+  return row;
+}
+
+interface InlineEditOptions {
+  mode: InlineEditMode;
+  dirPath: string;
+  initialValue: string;
+  onCommit: (value: string) => Promise<boolean>;
+}
+
+// startInlineEdit swaps `row`'s label <span> for a focused <input>, wiring
+// commit (Enter/blur) and cancel (Escape/empty-Enter) around the pure
+// normalizeEditValue/shouldDiscardEdit helpers from inline-edit.ts. It owns
+// exactly one live edit at a time via the module-level `activeEdit` — a
+// second call always discards whatever edit was previously active before
+// starting the new one. A failed onCommit reopens the edit recursively,
+// pre-filled with the attempted (already-trimmed) value.
+function startInlineEdit(row: HTMLDivElement, opts: InlineEditOptions): void {
+  activeEdit?.discard();
+
+  // A retry reopen (failed commit) finds an <input> already in the row
+  // (left there by the failed attempt) instead of the original <span>; a
+  // fresh activation finds the <span>. Either way a brand-new <input> is
+  // created here — never reused — so a retry never accumulates duplicate
+  // keydown/blur listeners from the previous (now-dead, settled) attempt.
+  // rename's true original label is captured once, in row.dataset, so a
+  // later Escape on a retry still restores the real pre-edit name rather
+  // than the failed attempted value.
+  const placeholder = row.querySelector<HTMLElement>('span, input')!;
+  if (opts.mode === 'rename' && row.dataset.originalLabel === undefined && placeholder.tagName === 'SPAN') {
+    row.dataset.originalLabel = placeholder.textContent ?? '';
+  }
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = opts.initialValue;
+  placeholder.replaceWith(input);
+
+  const discard = () => {
+    if (opts.mode === 'rename') {
+      const restored = document.createElement('span');
+      restored.textContent = row.dataset.originalLabel ?? '';
+      delete row.dataset.originalLabel;
+      input.replaceWith(restored);
+    } else {
+      row.remove();
+    }
+  };
+
+  activeEdit = { dirPath: opts.dirPath, discard };
+
+  // settled guards against a double commit/cancel: Escape's discard() (or a
+  // successful commit's refreshDir) removes the focused input from the DOM,
+  // which synchronously fires its own `blur` event — without this flag that
+  // blur would re-trigger commit() a second time.
+  let settled = false;
+
+  const cancel = () => {
+    if (settled) return;
+    settled = true;
+    activeEdit = null;
+    discard();
+  };
+
+  const commit = async () => {
+    if (settled) return;
+    settled = true;
+    const value = normalizeEditValue(input.value);
+    if (value === null) {
+      activeEdit = null;
+      discard();
+      return;
+    }
+    activeEdit = null;
+    const ok = await opts.onCommit(value);
+    if (!ok) {
+      startInlineEdit(row, { ...opts, initialValue: value });
+    }
+  };
+
+  input.addEventListener('keydown', (e) => {
+    // Isolates the input from the row's own shortcuts (Enter/Delete/F2) —
+    // spec's "Keydown isolation from row shortcuts".
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void commit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancel();
+    }
+  });
+  input.addEventListener('blur', () => {
+    void commit();
+  });
+  // A row's own 'click' listener (open the file / toggle the folder) sits
+  // on the row div, so a click bubbling up from inside the input — e.g. to
+  // reposition the caret while renaming — would otherwise fire it too.
+  // Not spec-mandated, but the same row-identity-preserved / isolated-input
+  // intent behind the keydown stopPropagation above.
+  input.addEventListener('click', (e) => e.stopPropagation());
+
+  input.focus();
+  // Rename's initial activation and any retry reopen (create or rename)
+  // both pre-fill a non-empty name that should be fully selected; a fresh
+  // Create activation starts empty, so there is nothing to select.
+  if (input.value) input.select();
+}
+
+// prepareCreateContainer resolves the DOM container a new placeholder row
+// should be inserted into for Create File/Folder in dirPath, auto-expanding
+// a collapsed target folder first (matches VS Code/Zed convention). Returns
+// null if dirPath's row can't be found/expanded — defensive; shouldn't
+// normally happen from the UI.
+async function prepareCreateContainer(dirPath: string): Promise<{ container: HTMLElement; depth: number } | null> {
+  if (dirPath === workspaceRoot) return { container: treeEl, depth: 0 };
+
+  const row = findFolderRow(dirPath);
+  if (!row) return null;
+  const depth = Number(row.style.getPropertyValue('--d')) || 0;
+
+  if (row.dataset.expanded !== 'true') {
+    await toggleFolder(row, dirPath, depth);
+  }
+  const next = row.nextElementSibling as HTMLDivElement | null;
+  if (!next || next.dataset.parent !== dirPath) return null;
+  return { container: next, depth: depth + 1 };
+}
+
 async function refreshDir(dirPath: string) {
+  if (shouldDiscardEdit(activeEdit, dirPath)) {
+    activeEdit!.discard();
+    activeEdit = null;
+  }
   if (dirPath === workspaceRoot) {
     const entries = await ReadDir(dirPath);
     treeEl.innerHTML = '';
@@ -1208,28 +1389,56 @@ async function refreshDir(dirPath: string) {
 }
 
 async function createFileIn(dirPath: string) {
-  const name = window.prompt('Nombre del archivo:')?.trim();
-  if (!name) return;
-  try {
-    const path = await CreateFile(dirPath, name);
-    await refreshDir(dirPath);
-    await openFileFromTree(path);
-  } catch (err) {
-    console.error(err);
-    window.alert(`No se pudo crear el archivo: ${err}`);
-  }
+  if (!workspaceRoot) return;
+  const target = await prepareCreateContainer(dirPath);
+  if (!target) return;
+
+  const placeholder = buildPlaceholderRow('create-file', target.depth);
+  target.container.prepend(placeholder);
+
+  startInlineEdit(placeholder, {
+    mode: 'create-file',
+    dirPath,
+    initialValue: '',
+    onCommit: async (value) => {
+      try {
+        const path = await CreateFile(dirPath, value);
+        await refreshDir(dirPath);
+        await openFileFromTree(path);
+        return true;
+      } catch (err) {
+        console.error(err);
+        window.alert(`No se pudo crear el archivo: ${err}`);
+        return false;
+      }
+    },
+  });
 }
 
 async function createFolderIn(dirPath: string) {
-  const name = window.prompt('Nombre de la carpeta:')?.trim();
-  if (!name) return;
-  try {
-    await CreateFolder(dirPath, name);
-    await refreshDir(dirPath);
-  } catch (err) {
-    console.error(err);
-    window.alert(`No se pudo crear la carpeta: ${err}`);
-  }
+  if (!workspaceRoot) return;
+  const target = await prepareCreateContainer(dirPath);
+  if (!target) return;
+
+  const placeholder = buildPlaceholderRow('create-folder', target.depth);
+  target.container.prepend(placeholder);
+
+  startInlineEdit(placeholder, {
+    mode: 'create-folder',
+    dirPath,
+    initialValue: '',
+    onCommit: async (value) => {
+      try {
+        await CreateFolder(dirPath, value);
+        await refreshDir(dirPath);
+        return true;
+      } catch (err) {
+        console.error(err);
+        window.alert(`No se pudo crear la carpeta: ${err}`);
+        return false;
+      }
+    },
+  });
 }
 
 document.getElementById('new-file-btn')!.addEventListener('click', (e) => {
@@ -1299,7 +1508,9 @@ ctxRenameBtn.addEventListener('click', () => {
   const path = contextMenuPath;
   const kind = contextMenuKind;
   hideContextMenu();
-  if (path && kind !== 'root') void renameEntry(path);
+  if (!path || kind === 'root') return;
+  const row = findTreeRow(path);
+  if (row) renameEntry(row, path);
 });
 ctxDeleteBtn.addEventListener('click', () => {
   const path = contextMenuPath;

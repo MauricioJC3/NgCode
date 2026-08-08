@@ -156,6 +156,12 @@ html, body {
 .tree-row.drop-target, .tree-root.drop-target {
   background: var(--accent-soft); outline: 1px dashed var(--accent); outline-offset: -1px;
 }
+.tree-row input {
+  flex: 1; min-width: 0; font: inherit; font-size: 13px;
+  color: var(--text-primary); background: var(--bg-hover);
+  border: 1px solid var(--accent); border-radius: 3px;
+  padding: 0 4px; outline: none;
+}
 
 .sidebar-panel { display: flex; flex-direction: column; min-height: 0; }
 .sidebar-panel[hidden] { display: none; }
