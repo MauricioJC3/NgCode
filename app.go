@@ -242,6 +242,9 @@ func (a *App) CreateFile(dirPath string, name string) (string, error) {
 	path := filepath.Join(dirPath, name)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 	if err != nil {
+		if os.IsExist(err) {
+			return "", fmt.Errorf("%s already exists", name)
+		}
 		return "", err
 	}
 	f.Close()
@@ -255,6 +258,9 @@ func (a *App) CreateFolder(dirPath string, name string) (string, error) {
 	}
 	path := filepath.Join(dirPath, name)
 	if err := os.Mkdir(path, 0755); err != nil {
+		if os.IsExist(err) {
+			return "", fmt.Errorf("%s already exists", name)
+		}
 		return "", err
 	}
 	return path, nil

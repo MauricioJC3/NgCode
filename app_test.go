@@ -492,3 +492,85 @@ func TestRenameEntry(t *testing.T) {
 		}
 	})
 }
+
+// --- CreateFile ------------------------------------------------------------
+
+func TestCreateFile(t *testing.T) {
+	t.Run("creates a file successfully", func(t *testing.T) {
+		dir := t.TempDir()
+
+		app := &App{}
+		newPath, err := app.CreateFile(dir, "new.txt")
+		if err != nil {
+			t.Fatalf("CreateFile: unexpected error: %v", err)
+		}
+		wantPath := filepath.Join(dir, "new.txt")
+		if newPath != wantPath {
+			t.Errorf("CreateFile returned %q, want %q", newPath, wantPath)
+		}
+		if _, statErr := os.Stat(wantPath); statErr != nil {
+			t.Errorf("expected created file at %q: %v", wantPath, statErr)
+		}
+	})
+
+	t.Run("rejects a name collision with an existing file", func(t *testing.T) {
+		dir := t.TempDir()
+		existing := filepath.Join(dir, "foo.txt")
+		if err := os.WriteFile(existing, []byte("hi"), 0644); err != nil {
+			t.Fatalf("write foo: %v", err)
+		}
+
+		app := &App{}
+		_, err := app.CreateFile(dir, "foo.txt")
+		if err == nil {
+			t.Fatal("expected error on name collision, got nil")
+		}
+		wantMsg := "foo.txt already exists"
+		if err.Error() != wantMsg {
+			t.Errorf("error = %q, want %q", err.Error(), wantMsg)
+		}
+	})
+}
+
+// --- CreateFolder ------------------------------------------------------------
+
+func TestCreateFolder(t *testing.T) {
+	t.Run("creates a folder successfully", func(t *testing.T) {
+		dir := t.TempDir()
+
+		app := &App{}
+		newPath, err := app.CreateFolder(dir, "newfolder")
+		if err != nil {
+			t.Fatalf("CreateFolder: unexpected error: %v", err)
+		}
+		wantPath := filepath.Join(dir, "newfolder")
+		if newPath != wantPath {
+			t.Errorf("CreateFolder returned %q, want %q", newPath, wantPath)
+		}
+		info, statErr := os.Stat(wantPath)
+		if statErr != nil {
+			t.Fatalf("expected created folder at %q: %v", wantPath, statErr)
+		}
+		if !info.IsDir() {
+			t.Errorf("expected %q to be a folder", wantPath)
+		}
+	})
+
+	t.Run("rejects a name collision with an existing folder", func(t *testing.T) {
+		dir := t.TempDir()
+		existing := filepath.Join(dir, "existingfolder")
+		if err := os.Mkdir(existing, 0755); err != nil {
+			t.Fatalf("mkdir existingfolder: %v", err)
+		}
+
+		app := &App{}
+		_, err := app.CreateFolder(dir, "existingfolder")
+		if err == nil {
+			t.Fatal("expected error on name collision, got nil")
+		}
+		wantMsg := "existingfolder already exists"
+		if err.Error() != wantMsg {
+			t.Errorf("error = %q, want %q", err.Error(), wantMsg)
+		}
+	})
+}
