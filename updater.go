@@ -642,5 +642,6 @@ func relaunch(exe string) error {
 	cmd := exec.Command(exe, os.Args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	hideConsoleWindow(cmd)
 	return cmd.Start()
 }

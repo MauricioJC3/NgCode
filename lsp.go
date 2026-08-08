@@ -69,6 +69,7 @@ func fromFileURI(uri string) string {
 
 func startLSPClient(ctx context.Context, rootPath string) (*lspClient, error) {
 	cmd := exec.Command("gopls", "serve")
+	hideConsoleWindow(cmd)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
