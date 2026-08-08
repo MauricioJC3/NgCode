@@ -173,12 +173,39 @@ func TestSearchFilePerFileCap(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	matches, err := searchFile(path, "needle", false)
+	matches, truncated, err := searchFile(path, "needle", false)
 	if err != nil {
 		t.Fatalf("searchFile: %v", err)
 	}
 	if len(matches) != 200 {
 		t.Errorf("searchFile matches = %d, want 200 (per-file cap)", len(matches))
+	}
+	if !truncated {
+		t.Errorf("expected searchFile truncated = true when the file has more matches than the per-file cap")
+	}
+}
+
+func TestSearchFileNotTruncatedUnderCap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "few.txt")
+
+	var sb strings.Builder
+	for i := 0; i < 5; i++ {
+		sb.WriteString("needle here\n")
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	matches, truncated, err := searchFile(path, "needle", false)
+	if err != nil {
+		t.Fatalf("searchFile: %v", err)
+	}
+	if len(matches) != 5 {
+		t.Errorf("searchFile matches = %d, want 5", len(matches))
+	}
+	if truncated {
+		t.Errorf("expected searchFile truncated = false when matches stay under the per-file cap")
 	}
 }
 
@@ -190,7 +217,7 @@ func TestSearchFilePreviewBounded(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	matches, err := searchFile(path, "needle", false)
+	matches, _, err := searchFile(path, "needle", false)
 	if err != nil {
 		t.Fatalf("searchFile: %v", err)
 	}
@@ -210,7 +237,7 @@ func TestSearchFileLineAndColumn(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	matches, err := searchFile(path, "needle", false)
+	matches, _, err := searchFile(path, "needle", false)
 	if err != nil {
 		t.Fatalf("searchFile: %v", err)
 	}
@@ -232,12 +259,15 @@ func TestSearchFileNoMatches(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	matches, err := searchFile(path, "zzz", false)
+	matches, truncated, err := searchFile(path, "zzz", false)
 	if err != nil {
 		t.Fatalf("searchFile: %v", err)
 	}
 	if len(matches) != 0 {
 		t.Errorf("expected no matches, got %d", len(matches))
+	}
+	if truncated {
+		t.Errorf("expected truncated = false when there are no matches")
 	}
 }
 
@@ -320,6 +350,58 @@ func TestRunSearchTotalCap(t *testing.T) {
 	}
 	if !done.Truncated {
 		t.Errorf("expected done.Truncated = true when total cap is reached")
+	}
+}
+
+// TestRunSearchPerFileTruncationSignaled covers CRITICAL-1 from the
+// project-search verify report: a single file with more matches than the
+// per-file cap must carry a per-file truncation signal on its
+// search:results batch, distinct from search:done's total-cap Truncated
+// flag, even when the workspace-wide total stays well under the total cap.
+func TestRunSearchPerFileTruncationSignaled(t *testing.T) {
+	dir := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < 250; i++ {
+		sb.WriteString("needle\n")
+	}
+	path := filepath.Join(dir, "many.txt")
+	if err := os.WriteFile(path, []byte(sb.String()), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	a := &App{searchGen: 1}
+	emit := &fakeEmit{}
+	a.runSearch(1, dir, "needle", false, emit.emit)
+
+	events := emit.snapshot()
+	var batch *SearchResultBatch
+	var done *SearchDone
+	for _, e := range events {
+		switch v := e.data.(type) {
+		case SearchResultBatch:
+			b := v
+			batch = &b
+		case SearchDone:
+			d := v
+			done = &d
+		}
+	}
+
+	if batch == nil {
+		t.Fatalf("expected a search:results batch")
+	}
+	if len(batch.Matches) != 200 {
+		t.Errorf("batch matches = %d, want 200 (per-file cap)", len(batch.Matches))
+	}
+	if !batch.Truncated {
+		t.Errorf("expected batch.Truncated = true when the per-file cap is reached")
+	}
+
+	if done == nil {
+		t.Fatalf("expected a search:done event")
+	}
+	if done.Truncated {
+		t.Errorf("expected done.Truncated = false when only the per-file cap (not the total cap) is reached")
 	}
 }
 

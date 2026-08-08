@@ -4,8 +4,10 @@ import {
   nextGeneration,
   isCurrentGeneration,
   groupMatchesByFile,
+  trackTruncatedFile,
   type SearchSession,
   type SearchMatch,
+  type SearchResultBatch,
 } from './search';
 
 describe('debounce', () => {
@@ -117,5 +119,63 @@ describe('groupMatchesByFile', () => {
 
   it('returns an empty map for no matches', () => {
     expect(groupMatchesByFile([]).size).toBe(0);
+  });
+});
+
+describe('trackTruncatedFile', () => {
+  it('adds the batch file path when the batch is truncated', () => {
+    const truncatedPaths = new Set<string>();
+    const batch: SearchResultBatch = {
+      generation: 1,
+      truncated: true,
+      matches: [{ path: 'many.txt', line: 0, column: 0, preview: 'needle' }],
+    };
+
+    trackTruncatedFile(truncatedPaths, batch);
+
+    expect(truncatedPaths.has('many.txt')).toBe(true);
+  });
+
+  it('does not add the path when the batch is not truncated', () => {
+    const truncatedPaths = new Set<string>();
+    const batch: SearchResultBatch = {
+      generation: 1,
+      truncated: false,
+      matches: [{ path: 'few.txt', line: 0, column: 0, preview: 'needle' }],
+    };
+
+    trackTruncatedFile(truncatedPaths, batch);
+
+    expect(truncatedPaths.size).toBe(0);
+  });
+
+  it('is a no-op for an empty batch even if flagged truncated', () => {
+    const truncatedPaths = new Set<string>();
+    const batch: SearchResultBatch = { generation: 1, truncated: true, matches: [] };
+
+    trackTruncatedFile(truncatedPaths, batch);
+
+    expect(truncatedPaths.size).toBe(0);
+  });
+
+  it('accumulates truncated paths across multiple batches', () => {
+    const truncatedPaths = new Set<string>();
+    trackTruncatedFile(truncatedPaths, {
+      generation: 1,
+      truncated: true,
+      matches: [{ path: 'a.txt', line: 0, column: 0, preview: 'x' }],
+    });
+    trackTruncatedFile(truncatedPaths, {
+      generation: 1,
+      truncated: false,
+      matches: [{ path: 'b.txt', line: 0, column: 0, preview: 'x' }],
+    });
+    trackTruncatedFile(truncatedPaths, {
+      generation: 1,
+      truncated: true,
+      matches: [{ path: 'c.txt', line: 0, column: 0, preview: 'x' }],
+    });
+
+    expect([...truncatedPaths]).toEqual(['a.txt', 'c.txt']);
   });
 });

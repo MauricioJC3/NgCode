@@ -55,10 +55,19 @@ type SearchMatch struct {
 }
 
 // SearchResultBatch carries all matches found in a single file, tagged with
-// the generation of the search that produced them.
+// the generation of the search that produced them. Truncated signals that
+// this specific file's own results were capped — either because the file
+// itself hit perFileMatchCap, or because the workspace-wide totalMatchCap
+// was reached while this batch was being emitted — independent of
+// SearchDone.Truncated, which only reflects the total cap. Without this,
+// a file with more than perFileMatchCap matches would silently return a
+// capped result set with no indication anything was dropped whenever the
+// workspace total stayed under totalMatchCap (see spec's "Per-file cap
+// reached" scenario).
 type SearchResultBatch struct {
 	Generation int64         `json:"generation"`
 	Matches    []SearchMatch `json:"matches"`
+	Truncated  bool          `json:"truncated"`
 }
 
 // SearchDone signals a search finished (not superseded), with the final
@@ -136,21 +145,28 @@ func searchLine(line, query string, caseSensitive bool) []int {
 }
 
 // searchFile scans path line by line for query, returning up to
-// perFileMatchCap matches with previews bounded to maxPreviewLen.
-func searchFile(path, query string, caseSensitive bool) ([]SearchMatch, error) {
+// perFileMatchCap matches with previews bounded to maxPreviewLen. The
+// second return value reports whether the file had more matching content
+// than perFileMatchCap allowed to be collected — true whenever scanning
+// stops early because the cap was already full, either mid-line (more
+// matches existed later on the same line) or at the start of a subsequent
+// line (the file had more lines left to scan).
+func searchFile(path, query string, caseSensitive bool) ([]SearchMatch, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer f.Close()
 
 	matches := []SearchMatch{}
+	truncated := false
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	lineNum := 0
 	for scanner.Scan() {
 		if len(matches) >= perFileMatchCap {
+			truncated = true
 			break
 		}
 
@@ -158,6 +174,7 @@ func searchFile(path, query string, caseSensitive bool) ([]SearchMatch, error) {
 		cols := searchLine(line, query, caseSensitive)
 		for _, col := range cols {
 			if len(matches) >= perFileMatchCap {
+				truncated = true
 				break
 			}
 			matches = append(matches, SearchMatch{
@@ -170,10 +187,10 @@ func searchFile(path, query string, caseSensitive bool) ([]SearchMatch, error) {
 		lineNum++
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	return matches, nil
+	return matches, truncated, nil
 }
 
 // boundPreview truncates s to maxPreviewLen bytes, if needed.
@@ -236,7 +253,7 @@ func (a *App) runSearch(gen int64, root, query string, caseSensitive bool, emit 
 			return nil
 		}
 
-		matches, err := searchFile(path, query, caseSensitive)
+		matches, fileTruncated, err := searchFile(path, query, caseSensitive)
 		if err != nil || len(matches) == 0 {
 			return nil
 		}
@@ -245,13 +262,14 @@ func (a *App) runSearch(gen int64, root, query string, caseSensitive bool, emit 
 		if len(matches) > remaining {
 			matches = matches[:remaining]
 			truncated = true
+			fileTruncated = true
 		}
 		total += len(matches)
 
 		if !a.isSearchGenCurrent(gen) {
 			return filepath.SkipAll
 		}
-		emit("search:results", SearchResultBatch{Generation: gen, Matches: matches})
+		emit("search:results", SearchResultBatch{Generation: gen, Matches: matches, Truncated: fileTruncated})
 
 		if total >= totalMatchCap {
 			truncated = true

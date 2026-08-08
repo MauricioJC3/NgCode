@@ -23,7 +23,7 @@ import type { main } from '../wailsjs/go/models';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { handleUpdateAvailable, type UpdateInfo } from './update';
 import {
-  debounce, nextGeneration, isCurrentGeneration, groupMatchesByFile,
+  debounce, nextGeneration, isCurrentGeneration, groupMatchesByFile, trackTruncatedFile,
   type SearchSession, type SearchMatch, type SearchResultBatch, type SearchDone,
 } from './search';
 
@@ -904,6 +904,11 @@ async function toggleFolder(row: HTMLDivElement, path: string, depth: number) {
 const searchSession: SearchSession = { generation: 0 };
 let searchCaseSensitive = false;
 let searchMatches: SearchMatch[] = [];
+// searchTruncatedFiles holds the paths of files whose own results were
+// capped (CRITICAL-1 fix) — rendered as a per-file truncation indicator on
+// that file's result group, independent from #search-truncated which only
+// reflects the total-cap flag on search:done.
+let searchTruncatedFiles = new Set<string>();
 
 const panelExplorerEl = document.getElementById('panel-explorer')!;
 const panelSearchEl = document.getElementById('panel-search')!;
@@ -933,6 +938,7 @@ function setSearchMessage(text: string | null) {
 
 function clearSearchResults() {
   searchMatches = [];
+  searchTruncatedFiles = new Set();
   searchResultsEl.innerHTML = '';
   searchTruncatedEl.hidden = true;
 }
@@ -951,6 +957,13 @@ function renderSearchResults() {
     pathEl.className = 'search-file-path';
     pathEl.textContent = dirOf(path);
     header.appendChild(pathEl);
+    if (searchTruncatedFiles.has(path)) {
+      const truncatedEl = document.createElement('span');
+      truncatedEl.className = 'search-file-truncated';
+      truncatedEl.textContent = 'resultados limitados';
+      truncatedEl.title = 'Se alcanzó el límite de coincidencias por archivo; hay más resultados sin mostrar.';
+      header.appendChild(truncatedEl);
+    }
     group.appendChild(header);
 
     matches.forEach((match) => {
@@ -1042,6 +1055,7 @@ searchCaseBtn.addEventListener('click', () => {
 EventsOn('search:results', (payload: SearchResultBatch) => {
   if (!isCurrentGeneration(searchSession, payload.generation)) return;
   searchMatches.push(...payload.matches);
+  trackTruncatedFile(searchTruncatedFiles, payload);
   renderSearchResults();
 });
 
