@@ -153,6 +153,9 @@ html, body {
   background: var(--accent-soft); color: var(--text-primary);
   box-shadow: inset 2px 0 0 var(--accent);
 }
+.tree-row.drop-target, .tree-root.drop-target {
+  background: var(--accent-soft); outline: 1px dashed var(--accent); outline-offset: -1px;
+}
 
 .sidebar-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -234,6 +237,27 @@ html, body {
 .context-menu-item:hover { background: var(--bg-hover); }
 
 .editor-body { flex: 1; display: flex; min-height: 0; background: var(--bg-void); position: relative; }
+
+/* ---- CodeMirror search panel (@codemirror/search) ---- */
+.cm-panels { background: transparent; }
+.cm-panel.cm-search {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 6px 10px; background: var(--bg-elevated); border-bottom: 1px solid var(--border);
+  font-size: 12.5px; color: var(--text-secondary);
+}
+.cm-panel.cm-search input[type="text"] {
+  font: inherit; padding: 4px 8px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--bg-void); color: var(--text-primary);
+}
+.cm-panel.cm-search input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.cm-panel.cm-search button {
+  font: inherit; padding: 4px 10px; border-radius: 4px;
+  border: 1px solid var(--border); background: transparent; color: var(--text-secondary); cursor: pointer;
+}
+.cm-panel.cm-search button:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+.cm-panel.cm-search label { display: flex; align-items: center; gap: 4px; }
+.cm-searchMatch { background: var(--accent-soft); }
+.cm-searchMatch-selected { background: var(--accent); color: var(--bg-void); }
 
 .empty-state {
   position: absolute; inset: 0; display: flex; flex-direction: column;

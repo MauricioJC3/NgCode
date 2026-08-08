@@ -1,7 +1,7 @@
 import './style.css';
 import './app.css';
 
-import { EditorView, type ViewUpdate, hoverTooltip, type Tooltip } from '@codemirror/view';
+import { EditorView, keymap, type ViewUpdate, hoverTooltip, type Tooltip } from '@codemirror/view';
 import { EditorState, type Text } from '@codemirror/state';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
@@ -13,8 +13,9 @@ import { css } from '@codemirror/lang-css';
 import { markdown } from '@codemirror/lang-markdown';
 import { autocompletion, type CompletionContext, type CompletionResult, type Completion } from '@codemirror/autocomplete';
 import { linter, forceLinting, type Diagnostic } from '@codemirror/lint';
+import { search, searchKeymap } from '@codemirror/search';
 import {
-  OpenFolder, ReadDir, ReadFile, SaveFile, ForceQuit, CreateFile, CreateFolder,
+  OpenFolder, ReadDir, ReadFile, SaveFile, ForceQuit, CreateFile, CreateFolder, MoveEntry,
   LspStart, LspStop, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
   UpdateAccept, UpdateDismiss,
 } from '../wailsjs/go/main/App';
@@ -402,7 +403,16 @@ function buildState(content: string, path: string): EditorState {
   const lspExtensions = lspActive && extOf(path) === 'go' ? [goCompletion, goLinter, goHover, goDefinitionClick] : [];
   return EditorState.create({
     doc: content,
-    extensions: [basicSetup, ...langExtension(path), syntaxHighlighting(highlightStyle), editorTheme, EditorView.updateListener.of(onEditorUpdate), ...lspExtensions],
+    extensions: [
+      basicSetup,
+      ...langExtension(path),
+      syntaxHighlighting(highlightStyle),
+      editorTheme,
+      EditorView.updateListener.of(onEditorUpdate),
+      search({ top: true }),
+      keymap.of(searchKeymap),
+      ...lspExtensions,
+    ],
   });
 }
 
@@ -435,6 +445,11 @@ const saveBtn = document.getElementById('save-btn') as HTMLButtonElement;
 
 function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
+}
+
+function dirOf(path: string): string {
+  const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  return idx === -1 ? '' : path.slice(0, idx);
 }
 
 function renderTabs() {
@@ -684,6 +699,73 @@ const treeRootEl = document.getElementById('tree-root')!;
 const workspaceNameEl = document.getElementById('workspace-name')!;
 const sidebarEmptyEl = document.getElementById('sidebar-empty')!;
 
+// ---- drag-and-drop move ----
+
+function makeDraggable(row: HTMLDivElement, path: string) {
+  row.draggable = true;
+  row.addEventListener('dragstart', (e) => {
+    e.dataTransfer?.setData('text/plain', path);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  });
+}
+
+function makeDropTarget(el: HTMLElement, resolveDestDir: () => string | null) {
+  el.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer?.types.includes('text/plain')) return;
+    e.preventDefault();
+    el.classList.add('drop-target');
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('drop-target'));
+  el.addEventListener('drop', (e) => {
+    e.preventDefault();
+    el.classList.remove('drop-target');
+    const srcPath = e.dataTransfer?.getData('text/plain');
+    const destDir = resolveDestDir();
+    if (srcPath && destDir) void moveEntryTo(srcPath, destDir);
+  });
+}
+
+// Reassigns the path of any open tab affected by a move — oldPath itself
+// (file moved) or anything under it (folder moved, taking its open children
+// along). Without this, a moved-but-still-open file would keep saving to
+// the path it no longer lives at.
+function remapTabPaths(oldPath: string, newPath: string) {
+  const remap = (p: string): string | null => {
+    if (p === oldPath) return newPath;
+    const sep = p[oldPath.length];
+    if (p.startsWith(oldPath) && (sep === '/' || sep === '\\')) {
+      return newPath + sep + p.slice(oldPath.length + 1);
+    }
+    return null;
+  };
+
+  for (const tab of tabs) {
+    const remapped = remap(tab.path);
+    if (remapped) tab.path = remapped;
+  }
+  if (activePath) {
+    const remapped = remap(activePath);
+    if (remapped) {
+      activePath = remapped;
+      crumbEl.textContent = activePath;
+    }
+  }
+  renderTabs();
+}
+
+async function moveEntryTo(srcPath: string, destDir: string) {
+  const srcParent = dirOf(srcPath);
+  try {
+    const newPath = await MoveEntry(srcPath, destDir);
+    remapTabPaths(srcPath, newPath);
+    await refreshDir(srcParent || workspaceRoot!);
+    await refreshDir(destDir);
+  } catch (err) {
+    console.error(err);
+    window.alert(`No se pudo mover: ${err}`);
+  }
+}
+
 function createFileRow(entry: main.DirEntry, depth: number): HTMLDivElement {
   const row = document.createElement('div');
   row.className = 'tree-row is-file';
@@ -701,6 +783,7 @@ function createFileRow(entry: main.DirEntry, depth: number): HTMLDivElement {
   row.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
   });
+  makeDraggable(row, entry.Path);
   return row;
 }
 
@@ -725,6 +808,8 @@ function createFolderRow(entry: main.DirEntry, depth: number): HTMLDivElement {
   row.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
   });
+  makeDraggable(row, entry.Path);
+  makeDropTarget(row, () => entry.Path);
   return row;
 }
 
@@ -902,6 +987,7 @@ treeRootEl.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   showContextMenu(e.clientX, e.clientY, workspaceRoot);
 });
+makeDropTarget(treeRootEl, () => workspaceRoot);
 
 document.getElementById('ctx-new-file')!.addEventListener('click', () => {
   const dir = contextMenuDir;

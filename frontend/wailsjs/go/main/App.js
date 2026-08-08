@@ -42,6 +42,10 @@ export function LspStop() {
   return window['go']['main']['App']['LspStop']();
 }
 
+export function MoveEntry(arg1, arg2) {
+  return window['go']['main']['App']['MoveEntry'](arg1, arg2);
+}
+
 export function OpenFile() {
   return window['go']['main']['App']['OpenFile']();
 }

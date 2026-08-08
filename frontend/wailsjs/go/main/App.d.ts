@@ -22,6 +22,8 @@ export function LspStart(arg1:string):Promise<void>;
 
 export function LspStop():Promise<void>;
 
+export function MoveEntry(arg1:string,arg2:string):Promise<string>;
+
 export function OpenFile():Promise<main.FileData>;
 
 export function OpenFolder():Promise<string>;

@@ -21,6 +21,7 @@
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/lint": "^6.9.7",
+    "@codemirror/search": "^6.7.1",
     "codemirror": "^6.0.2"
   }
 }

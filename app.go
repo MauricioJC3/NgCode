@@ -244,6 +244,48 @@ func (a *App) CreateFolder(dirPath string, name string) (string, error) {
 	return path, nil
 }
 
+// MoveEntry moves the file or folder at srcPath into destDir (keeping its
+// base name) and returns the new path — backs drag-and-drop in the file
+// tree. Rejects moving a folder into itself or one of its own descendants
+// (would otherwise let os.Rename corrupt the tree), and rejects a name
+// collision at the destination rather than silently overwriting.
+func (a *App) MoveEntry(srcPath string, destDir string) (string, error) {
+	srcPath = filepath.Clean(srcPath)
+	destDir = filepath.Clean(destDir)
+
+	info, err := os.Stat(srcPath)
+	if err != nil {
+		return "", err
+	}
+	destInfo, err := os.Stat(destDir)
+	if err != nil {
+		return "", err
+	}
+	if !destInfo.IsDir() {
+		return "", fmt.Errorf("destination is not a folder")
+	}
+
+	if info.IsDir() {
+		if rel, relErr := filepath.Rel(srcPath, destDir); relErr == nil &&
+			rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("cannot move a folder into itself or one of its own subfolders")
+		}
+	}
+
+	destPath := filepath.Join(destDir, filepath.Base(srcPath))
+	if destPath == srcPath {
+		return "", fmt.Errorf("already in that folder")
+	}
+	if _, err := os.Stat(destPath); err == nil {
+		return "", fmt.Errorf("%s already exists in the destination folder", filepath.Base(srcPath))
+	}
+
+	if err := os.Rename(srcPath, destPath); err != nil {
+		return "", err
+	}
+	return destPath, nil
+}
+
 // currentLSP returns the active LSP client, if any, under lspMu — the single
 // point where a.lsp is read so every caller sees a consistent snapshot
 // instead of racing LspStart/LspStop on the raw field.
