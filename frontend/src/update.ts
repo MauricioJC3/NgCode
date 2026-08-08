@@ -21,7 +21,7 @@ export function formatUpdateMessage(info: UpdateInfo): string {
 }
 
 export interface UpdateAvailableDeps {
-  askConfirm: (message: string) => Promise<boolean>;
+  askConfirm: (message: string, opts?: { okLabel?: string; cancelLabel?: string }) => Promise<boolean>;
   updateAccept: () => Promise<void>;
   updateDismiss: () => Promise<void>;
 }
@@ -32,8 +32,12 @@ export interface UpdateAvailableDeps {
 // via UpdateAccept). A rejected UpdateAccept is surfaced the same way every
 // other bound-method failure is surfaced in this codebase: console.error,
 // no dedicated toast/error UI (confirmed: no such component exists).
+//
+// The confirm modal is shared with the close flow, whose default buttons
+// read "Cerrar sin guardar" / "Cancelar" — meaningless here, so this call
+// overrides them with update-specific labels.
 export async function handleUpdateAvailable(info: UpdateInfo, deps: UpdateAvailableDeps): Promise<void> {
-  const ok = await deps.askConfirm(formatUpdateMessage(info));
+  const ok = await deps.askConfirm(formatUpdateMessage(info), { okLabel: 'Actualizar ahora', cancelLabel: 'Ahora no' });
   if (!ok) {
     await deps.updateDismiss();
     return;

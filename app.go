@@ -394,7 +394,22 @@ func (a *App) UpdateAccept() error {
 	a.updaterMu.Lock()
 	a.updater = nil
 	a.updaterMu.Unlock()
-	runtime.Quit(a.ctx)
+
+	// performSwap already renamed the new binary into place and launched it
+	// as a separate process (relaunch, updater.go) — the replacement is
+	// already running by this point. runtime.Quit(a.ctx) would go through
+	// Wails' normal close negotiation (Frontend.Quit calls OnBeforeClose —
+	// our beforeClose — SYNCHRONOUSLY on this same goroutine, per Wails v2's
+	// windows frontend source), which emits "app:close-requested" and blocks
+	// waiting for the frontend to round-trip a ConfirmClose call. That
+	// round trip has nothing left to confirm (the decision was already made
+	// by accepting the update) and only adds a window where this
+	// still-shutting-down process and the freshly-launched one contend for
+	// the same default WebView2 profile directory — observed in practice as
+	// Windows reporting the app as "not responding" during this exact
+	// window. os.Exit skips that negotiation entirely: the new process is
+	// already up, so the old one just needs to get out of the way.
+	os.Exit(0)
 	return nil
 }
 

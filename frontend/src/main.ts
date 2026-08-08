@@ -595,28 +595,38 @@ const confirmMessageEl = document.getElementById('confirm-message')!;
 const confirmOkBtn = document.getElementById('confirm-ok') as HTMLButtonElement;
 const confirmCancelBtn = document.getElementById('confirm-cancel') as HTMLButtonElement;
 
+interface ConfirmOptions {
+  okLabel?: string;
+  cancelLabel?: string;
+}
+
 let confirmResolve: ((ok: boolean) => void) | null = null;
 // Queue for stacked confirm requests (e.g. an update-available prompt firing
 // while a window-close confirm is already pending). Without this, a second
 // askConfirm() call would overwrite confirmResolve and orphan the first
 // promise forever — fatal when that first promise is what unblocks Go's
 // beforeClose channel wait, since the app would then hang until force-killed.
-const confirmQueue: Array<{ message: string; resolve: (ok: boolean) => void }> = [];
+const confirmQueue: Array<{ message: string; resolve: (ok: boolean) => void; opts?: ConfirmOptions }> = [];
 
-function showConfirm(message: string, resolve: (ok: boolean) => void) {
+function showConfirm(message: string, resolve: (ok: boolean) => void, opts?: ConfirmOptions) {
   confirmMessageEl.textContent = message;
+  confirmOkBtn.textContent = opts?.okLabel ?? 'Cerrar sin guardar';
+  confirmCancelBtn.textContent = opts?.cancelLabel ?? 'Cancelar';
   confirmOverlayEl.hidden = false;
   confirmOkBtn.focus();
   confirmResolve = resolve;
 }
 
-function askConfirm(message: string): Promise<boolean> {
+// opts lets a caller override the default close-flow button labels (e.g. the
+// update-available prompt uses "Actualizar ahora" / "Ahora no" instead of
+// "Cerrar sin guardar" / "Cancelar" — the same modal backs both flows).
+function askConfirm(message: string, opts?: ConfirmOptions): Promise<boolean> {
   return new Promise((resolve) => {
     if (confirmResolve) {
-      confirmQueue.push({ message, resolve });
+      confirmQueue.push({ message, resolve, opts });
       return;
     }
-    showConfirm(message, resolve);
+    showConfirm(message, resolve, opts);
   });
 }
 
@@ -626,7 +636,7 @@ function closeConfirm(result: boolean) {
   confirmResolve = null;
 
   const next = confirmQueue.shift();
-  if (next) showConfirm(next.message, next.resolve);
+  if (next) showConfirm(next.message, next.resolve, next.opts);
 }
 
 confirmOkBtn.addEventListener('click', () => closeConfirm(true));

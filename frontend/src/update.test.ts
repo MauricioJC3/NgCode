@@ -19,7 +19,10 @@ describe('handleUpdateAvailable', () => {
 
     await handleUpdateAvailable(info, { askConfirm, updateAccept, updateDismiss });
 
-    expect(askConfirm).toHaveBeenCalledWith(formatUpdateMessage(info));
+    expect(askConfirm).toHaveBeenCalledWith(
+      formatUpdateMessage(info),
+      { okLabel: 'Actualizar ahora', cancelLabel: 'Ahora no' },
+    );
     expect(updateAccept).toHaveBeenCalledOnce();
     expect(updateDismiss).not.toHaveBeenCalled();
   });
