@@ -17,11 +17,15 @@ import { search, searchKeymap } from '@codemirror/search';
 import {
   OpenFolder, ReadDir, ReadFile, SaveFile, ForceQuit, CreateFile, CreateFolder, MoveEntry,
   LspEnsureStarted, LspStopAll, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
-  UpdateAccept, UpdateDismiss,
+  UpdateAccept, UpdateDismiss, SearchInWorkspace, SearchCancel,
 } from '../wailsjs/go/main/App';
 import type { main } from '../wailsjs/go/models';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 import { handleUpdateAvailable, type UpdateInfo } from './update';
+import {
+  debounce, nextGeneration, isCurrentGeneration, groupMatchesByFile,
+  type SearchSession, type SearchMatch, type SearchResultBatch, type SearchDone,
+} from './search';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -77,18 +81,30 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     </nav>
 
     <aside class="sidebar" aria-label="Explorador de archivos">
-      <div class="side-title">Explorador</div>
-      <div class="tree-root" id="tree-root" hidden>
-        ${ICON_CHEVRON}<span id="workspace-name" class="tree-root-name"></span>
-        <span class="tree-root-actions">
-          <button class="tree-action-btn" id="new-file-btn" type="button" aria-label="Nuevo archivo" title="Nuevo archivo">${ICON_NEW_FILE}</button>
-          <button class="tree-action-btn" id="new-folder-btn" type="button" aria-label="Nueva carpeta" title="Nueva carpeta">${ICON_NEW_FOLDER}</button>
-        </span>
+      <div class="sidebar-panel" id="panel-explorer">
+        <div class="side-title">Explorador</div>
+        <div class="tree-root" id="tree-root" hidden>
+          ${ICON_CHEVRON}<span id="workspace-name" class="tree-root-name"></span>
+          <span class="tree-root-actions">
+            <button class="tree-action-btn" id="new-file-btn" type="button" aria-label="Nuevo archivo" title="Nuevo archivo">${ICON_NEW_FILE}</button>
+            <button class="tree-action-btn" id="new-folder-btn" type="button" aria-label="Nueva carpeta" title="Nueva carpeta">${ICON_NEW_FOLDER}</button>
+          </span>
+        </div>
+        <div class="tree" id="tree"></div>
+        <div class="sidebar-empty" id="sidebar-empty">
+          <p>Ningún proyecto abierto</p>
+          <button class="open-folder-btn" id="open-folder-btn-empty" type="button">Abrir carpeta</button>
+        </div>
       </div>
-      <div class="tree" id="tree"></div>
-      <div class="sidebar-empty" id="sidebar-empty">
-        <p>Ningún proyecto abierto</p>
-        <button class="open-folder-btn" id="open-folder-btn-empty" type="button">Abrir carpeta</button>
+      <div class="sidebar-panel" id="panel-search" hidden>
+        <div class="side-title">Buscar</div>
+        <div class="search-controls">
+          <input class="search-input" id="search-query" type="text" placeholder="Buscar en el proyecto" autocomplete="off" />
+          <button class="search-case-btn" id="search-case-btn" type="button" aria-label="Coincidir mayúsculas y minúsculas" title="Coincidir mayúsculas y minúsculas" aria-pressed="false">Aa</button>
+        </div>
+        <div class="search-message" id="search-message" hidden></div>
+        <div class="search-results" id="search-results"></div>
+        <div class="search-truncated" id="search-truncated" hidden>Se alcanzó el límite de resultados; se muestran solo las primeras coincidencias.</div>
       </div>
     </aside>
 
@@ -883,6 +899,164 @@ async function toggleFolder(row: HTMLDivElement, path: string, depth: number) {
   }
 }
 
+// ---- project-wide search ----
+
+const searchSession: SearchSession = { generation: 0 };
+let searchCaseSensitive = false;
+let searchMatches: SearchMatch[] = [];
+
+const panelExplorerEl = document.getElementById('panel-explorer')!;
+const panelSearchEl = document.getElementById('panel-search')!;
+const explorerActBtn = document.querySelector<HTMLButtonElement>('.act-btn[aria-label="Explorador"]')!;
+const searchActBtn = document.querySelector<HTMLButtonElement>('.act-btn[aria-label="Buscar"]')!;
+const searchQueryEl = document.getElementById('search-query') as HTMLInputElement;
+const searchCaseBtn = document.getElementById('search-case-btn') as HTMLButtonElement;
+const searchResultsEl = document.getElementById('search-results')!;
+const searchMessageEl = document.getElementById('search-message')!;
+const searchTruncatedEl = document.getElementById('search-truncated')!;
+
+function showSidebarPanel(panel: 'explorer' | 'search') {
+  panelExplorerEl.hidden = panel !== 'explorer';
+  panelSearchEl.hidden = panel !== 'search';
+  explorerActBtn.classList.toggle('is-active', panel === 'explorer');
+  searchActBtn.classList.toggle('is-active', panel === 'search');
+  if (panel === 'search') searchQueryEl.focus();
+}
+
+explorerActBtn.addEventListener('click', () => showSidebarPanel('explorer'));
+searchActBtn.addEventListener('click', () => showSidebarPanel('search'));
+
+function setSearchMessage(text: string | null) {
+  searchMessageEl.textContent = text ?? '';
+  searchMessageEl.hidden = !text;
+}
+
+function clearSearchResults() {
+  searchMatches = [];
+  searchResultsEl.innerHTML = '';
+  searchTruncatedEl.hidden = true;
+}
+
+function renderSearchResults() {
+  const grouped = groupMatchesByFile(searchMatches);
+  const frag = document.createDocumentFragment();
+  grouped.forEach((matches, path) => {
+    const group = document.createElement('div');
+    group.className = 'search-file-group';
+
+    const header = document.createElement('div');
+    header.className = 'search-file-header';
+    header.textContent = fileName(path);
+    const pathEl = document.createElement('span');
+    pathEl.className = 'search-file-path';
+    pathEl.textContent = dirOf(path);
+    header.appendChild(pathEl);
+    group.appendChild(header);
+
+    matches.forEach((match) => {
+      const row = document.createElement('div');
+      row.className = 'search-result-row';
+      row.tabIndex = 0;
+      row.setAttribute('role', 'button');
+
+      const lineEl = document.createElement('span');
+      lineEl.className = 'search-result-line';
+      lineEl.textContent = String(match.line + 1);
+
+      const previewEl = document.createElement('span');
+      previewEl.className = 'search-result-preview';
+      previewEl.textContent = match.preview;
+
+      row.appendChild(lineEl);
+      row.appendChild(previewEl);
+
+      const jump = () => {
+        void openFileFromTree(match.path).then(() => placeCursorAt(editor, match.line, match.column));
+      };
+      row.addEventListener('click', jump);
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jump(); }
+      });
+
+      group.appendChild(row);
+    });
+
+    frag.appendChild(group);
+  });
+  searchResultsEl.innerHTML = '';
+  searchResultsEl.appendChild(frag);
+}
+
+// bumpSearchGeneration keeps the frontend's local SearchSession in lockstep
+// with the backend's a.searchGen: every call this module makes to
+// SearchInWorkspace or SearchCancel is routed through here so the two
+// monotonic counters advance 1:1, in the same order — that's what lets
+// isCurrentGeneration() reliably compare a "search:*" event's generation
+// against the frontend's own idea of "the current search" (design's
+// belt-and-suspenders stale-event filter, on top of the backend's own
+// generation check in search.go).
+function bumpSearchGeneration(): number {
+  return nextGeneration(searchSession);
+}
+
+function cancelSearch() {
+  bumpSearchGeneration();
+  SearchCancel().catch((err) => console.error(err));
+}
+
+function startSearch(query: string) {
+  if (!workspaceRoot) {
+    setSearchMessage('Abrí una carpeta para poder buscar.');
+    return;
+  }
+  if (!query) {
+    // Spec: empty query clears results and sends no *search* request — a
+    // cancel is still issued so any still-streaming previous search stops
+    // updating the (now-cleared) panel; it isn't a new search request.
+    clearSearchResults();
+    setSearchMessage(null);
+    cancelSearch();
+    return;
+  }
+
+  clearSearchResults();
+  setSearchMessage(null);
+  bumpSearchGeneration();
+  SearchInWorkspace(workspaceRoot, query, searchCaseSensitive).catch((err) => console.error(err));
+}
+
+const debouncedStartSearch = debounce((query: string) => startSearch(query), 300);
+
+searchQueryEl.addEventListener('input', () => {
+  debouncedStartSearch(searchQueryEl.value.trim());
+});
+
+searchCaseBtn.addEventListener('click', () => {
+  searchCaseSensitive = !searchCaseSensitive;
+  searchCaseBtn.classList.toggle('is-active', searchCaseSensitive);
+  searchCaseBtn.setAttribute('aria-pressed', String(searchCaseSensitive));
+  const query = searchQueryEl.value.trim();
+  if (query) startSearch(query);
+});
+
+EventsOn('search:results', (payload: SearchResultBatch) => {
+  if (!isCurrentGeneration(searchSession, payload.generation)) return;
+  searchMatches.push(...payload.matches);
+  renderSearchResults();
+});
+
+EventsOn('search:done', (payload: SearchDone) => {
+  if (!isCurrentGeneration(searchSession, payload.generation)) return;
+  searchTruncatedEl.hidden = !payload.truncated;
+  if (payload.total === 0) setSearchMessage('No se encontraron resultados.');
+});
+
+EventsOn('search:cancelled', (_payload: { generation: number }) => {
+  // No in-flight indicator exists today to clear; listener kept as an
+  // explicit no-op per the event contract (design's Data Flow) so a future
+  // "searching…" spinner has a hook to attach to.
+});
+
 let workspaceRoot: string | null = null;
 
 async function openWorkspace() {
@@ -901,6 +1075,14 @@ async function openWorkspace() {
   // openFileFromTree), not eagerly here.
   lspActiveLangs.clear();
   LspStopAll().catch((err) => console.error(err));
+
+  // Any in-flight project-wide search is rooted at the old workspace too;
+  // cancel it and clear the panel the same way LspStopAll clears LSP state
+  // above (task 30 / spec "Workspace Closed Mid-Search" — workspace-switch path).
+  cancelSearch();
+  clearSearchResults();
+  setSearchMessage(null);
+  searchQueryEl.value = '';
 
   try {
     const entries = await ReadDir(root);
