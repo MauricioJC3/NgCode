@@ -251,6 +251,25 @@ func (a *App) CreateFolder(dirPath string, name string) (string, error) {
 	return path, nil
 }
 
+// moveOrRename performs the collision check + os.Rename tail shared by
+// MoveEntry (dropping an entry into a different folder, same base name) and
+// RenameEntry (giving an entry a new base name, same parent folder). Rejects
+// a name collision at destPath rather than silently overwriting. Callers own
+// any same-path/same-name guard themselves — MoveEntry's "already in that
+// folder" and RenameEntry's "already named that" need different wording for
+// what is the same underlying destPath == srcPath condition, so a shared
+// helper can't own that copy (design: "moveOrRename scope").
+func moveOrRename(srcPath string, destPath string) (string, error) {
+	if _, err := os.Stat(destPath); err == nil {
+		return "", fmt.Errorf("%s already exists", filepath.Base(destPath))
+	}
+
+	if err := os.Rename(srcPath, destPath); err != nil {
+		return "", err
+	}
+	return destPath, nil
+}
+
 // MoveEntry moves the file or folder at srcPath into destDir (keeping its
 // base name) and returns the new path — backs drag-and-drop in the file
 // tree. Rejects moving a folder into itself or one of its own descendants
@@ -283,14 +302,8 @@ func (a *App) MoveEntry(srcPath string, destDir string) (string, error) {
 	if destPath == srcPath {
 		return "", fmt.Errorf("already in that folder")
 	}
-	if _, err := os.Stat(destPath); err == nil {
-		return "", fmt.Errorf("%s already exists in the destination folder", filepath.Base(srcPath))
-	}
 
-	if err := os.Rename(srcPath, destPath); err != nil {
-		return "", err
-	}
-	return destPath, nil
+	return moveOrRename(srcPath, destPath)
 }
 
 // currentLSP returns the running client for lang, if any, under lspMu — the
