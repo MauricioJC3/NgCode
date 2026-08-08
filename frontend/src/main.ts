@@ -14,7 +14,7 @@ import { markdown } from '@codemirror/lang-markdown';
 import { autocompletion, type CompletionContext, type CompletionResult, type Completion } from '@codemirror/autocomplete';
 import { linter, forceLinting, type Diagnostic } from '@codemirror/lint';
 import {
-  OpenFolder, ReadDir, ReadFile, SaveFile, ConfirmClose,
+  OpenFolder, ReadDir, ReadFile, SaveFile, ConfirmClose, CreateFile, CreateFolder,
   LspStart, LspStop, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
   UpdateAccept, UpdateDismiss,
 } from '../wailsjs/go/main/App';
@@ -26,6 +26,8 @@ const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none">
 const ICON_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/></svg>';
 const ICON_FILE = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M4.5 2h5L12.5 5v9a.6.6 0 0 1-.6.6h-7.4a.6.6 0 0 1-.6-.6V2.6a.6.6 0 0 1 .6-.6Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9.5 2v3h3" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>';
 const ICON_CLOSE = '<svg viewBox="0 0 12 12" fill="none"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+const ICON_NEW_FILE = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M4.5 2h5L12.5 5v9a.6.6 0 0 1-.6.6h-7.4a.6.6 0 0 1-.6-.6V2.6a.6.6 0 0 1 .6-.6Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9.5 2v3h3" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M6.3 10.9h3.4M8 9.2v3.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
+const ICON_NEW_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/><path d="M6.3 9.6h3.4M8 7.9v3.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div id="app-shell" data-ide-theme="dark">
@@ -76,7 +78,11 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <aside class="sidebar" aria-label="Explorador de archivos">
       <div class="side-title">Explorador</div>
       <div class="tree-root" id="tree-root" hidden>
-        ${ICON_CHEVRON}<span id="workspace-name"></span>
+        ${ICON_CHEVRON}<span id="workspace-name" class="tree-root-name"></span>
+        <span class="tree-root-actions">
+          <button class="tree-action-btn" id="new-file-btn" type="button" aria-label="Nuevo archivo" title="Nuevo archivo">${ICON_NEW_FILE}</button>
+          <button class="tree-action-btn" id="new-folder-btn" type="button" aria-label="Nueva carpeta" title="Nueva carpeta">${ICON_NEW_FOLDER}</button>
+        </span>
       </div>
       <div class="tree" id="tree"></div>
       <div class="sidebar-empty" id="sidebar-empty">
@@ -84,6 +90,11 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         <button class="open-folder-btn" id="open-folder-btn-empty" type="button">Abrir carpeta</button>
       </div>
     </aside>
+
+    <div class="context-menu" id="context-menu" hidden>
+      <button class="context-menu-item" id="ctx-new-file" type="button">Nuevo archivo</button>
+      <button class="context-menu-item" id="ctx-new-folder" type="button">Nueva carpeta</button>
+    </div>
 
     <section class="editor-area">
       <div class="tabbar" id="tabbar" role="tablist"></div>
@@ -735,6 +746,8 @@ async function toggleFolder(row: HTMLDivElement, path: string, depth: number) {
   }
 }
 
+let workspaceRoot: string | null = null;
+
 async function openWorkspace() {
   let root: string;
   try {
@@ -751,6 +764,7 @@ async function openWorkspace() {
     entries.forEach((entry) => {
       treeEl.appendChild(entry.IsDir ? createFolderRow(entry, 0) : createFileRow(entry, 0));
     });
+    workspaceRoot = root;
     workspaceNameEl.textContent = fileName(root).toUpperCase();
     treeRootEl.hidden = false;
     sidebarEmptyEl.hidden = true;
@@ -775,6 +789,126 @@ async function openWorkspace() {
 
 document.getElementById('open-folder-btn-empty')!.addEventListener('click', openWorkspace);
 document.getElementById('open-folder-btn-title')!.addEventListener('click', openWorkspace);
+
+// ---- create file / folder ----
+//
+// Mirrors VS Code / Zed's "new file / new folder" affordance: a pair of
+// buttons in the tree-root header (scoped to the workspace root — the only
+// way to add a first file to a freshly opened, still-empty folder) and a
+// right-click menu on any folder row (scoped to that folder).
+
+function findFolderRow(dirPath: string): HTMLDivElement | null {
+  const rows = treeEl.querySelectorAll<HTMLDivElement>('.tree-row[data-kind="folder"]');
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].dataset.path === dirPath) return rows[i];
+  }
+  return null;
+}
+
+async function refreshDir(dirPath: string) {
+  if (dirPath === workspaceRoot) {
+    const entries = await ReadDir(dirPath);
+    treeEl.innerHTML = '';
+    entries.forEach((entry) => {
+      treeEl.appendChild(entry.IsDir ? createFolderRow(entry, 0) : createFileRow(entry, 0));
+    });
+    return;
+  }
+
+  const row = findFolderRow(dirPath);
+  if (!row) return;
+  const depth = Number(row.style.getPropertyValue('--d')) || 0;
+  const next = row.nextElementSibling as HTMLDivElement | null;
+  if (next && next.dataset.parent === dirPath) next.remove();
+
+  const entries = await ReadDir(dirPath);
+  const container = document.createElement('div');
+  container.dataset.parent = dirPath;
+  entries.forEach((entry) => {
+    container.appendChild(entry.IsDir ? createFolderRow(entry, depth + 1) : createFileRow(entry, depth + 1));
+  });
+  row.after(container);
+  row.dataset.expanded = 'true';
+  row.querySelector('.chev')!.classList.remove('is-closed');
+}
+
+async function createFileIn(dirPath: string) {
+  const name = window.prompt('Nombre del archivo:')?.trim();
+  if (!name) return;
+  try {
+    const path = await CreateFile(dirPath, name);
+    await refreshDir(dirPath);
+    await openFileFromTree(path);
+  } catch (err) {
+    console.error(err);
+    window.alert(`No se pudo crear el archivo: ${err}`);
+  }
+}
+
+async function createFolderIn(dirPath: string) {
+  const name = window.prompt('Nombre de la carpeta:')?.trim();
+  if (!name) return;
+  try {
+    await CreateFolder(dirPath, name);
+    await refreshDir(dirPath);
+  } catch (err) {
+    console.error(err);
+    window.alert(`No se pudo crear la carpeta: ${err}`);
+  }
+}
+
+document.getElementById('new-file-btn')!.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (workspaceRoot) void createFileIn(workspaceRoot);
+});
+document.getElementById('new-folder-btn')!.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (workspaceRoot) void createFolderIn(workspaceRoot);
+});
+
+const contextMenuEl = document.getElementById('context-menu') as HTMLDivElement;
+let contextMenuDir: string | null = null;
+
+function showContextMenu(x: number, y: number, dirPath: string) {
+  contextMenuDir = dirPath;
+  contextMenuEl.style.left = `${x}px`;
+  contextMenuEl.style.top = `${y}px`;
+  contextMenuEl.hidden = false;
+}
+
+function hideContextMenu() {
+  contextMenuEl.hidden = true;
+  contextMenuDir = null;
+}
+
+treeEl.addEventListener('contextmenu', (e) => {
+  const row = (e.target as HTMLElement).closest<HTMLDivElement>('.tree-row[data-kind="folder"]');
+  if (!row) return;
+  e.preventDefault();
+  showContextMenu(e.clientX, e.clientY, row.dataset.path!);
+});
+treeRootEl.addEventListener('contextmenu', (e) => {
+  if (!workspaceRoot) return;
+  e.preventDefault();
+  showContextMenu(e.clientX, e.clientY, workspaceRoot);
+});
+
+document.getElementById('ctx-new-file')!.addEventListener('click', () => {
+  const dir = contextMenuDir;
+  hideContextMenu();
+  if (dir) void createFileIn(dir);
+});
+document.getElementById('ctx-new-folder')!.addEventListener('click', () => {
+  const dir = contextMenuDir;
+  hideContextMenu();
+  if (dir) void createFolderIn(dir);
+});
+document.addEventListener('click', (e) => {
+  if (!contextMenuEl.hidden && !contextMenuEl.contains(e.target as Node)) hideContextMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !contextMenuEl.hidden) hideContextMenu();
+});
 
 // ---- theme toggle ----
 

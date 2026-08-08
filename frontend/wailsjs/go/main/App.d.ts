@@ -4,6 +4,10 @@ import {main} from '../models';
 
 export function ConfirmClose(arg1:boolean):Promise<void>;
 
+export function CreateFile(arg1:string,arg2:string):Promise<string>;
+
+export function CreateFolder(arg1:string,arg2:string):Promise<string>;
+
 export function LspCompletion(arg1:string,arg2:number,arg3:number):Promise<string>;
 
 export function LspDefinition(arg1:string,arg2:number,arg3:number):Promise<string>;

@@ -127,6 +127,13 @@ html, body {
   padding: 4px 10px; font-size: 12.5px; font-weight: 600; color: var(--text-primary);
 }
 .tree-root .chev { color: var(--text-tertiary); }
+.tree-root-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-root-actions { display: flex; gap: 2px; flex-shrink: 0; }
+.tree-action-btn {
+  width: 20px; height: 20px; border: none; background: transparent; color: var(--text-tertiary);
+  border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.tree-action-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 .tree { font-size: 13px; }
 .tree-row {
   display: flex; align-items: center; gap: 6px;
@@ -212,6 +219,19 @@ html, body {
 .modal-btn:hover { color: var(--text-primary); border-color: var(--text-secondary); }
 .modal-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--bg-void); font-weight: 600; }
 .modal-btn-primary:hover { background: var(--accent-dim); border-color: var(--accent-dim); color: var(--bg-void); }
+
+/* ---- folder context menu ---- */
+.context-menu {
+  position: fixed; z-index: 60; min-width: 160px;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .35); padding: 4px; display: flex; flex-direction: column;
+}
+.context-menu[hidden] { display: none; }
+.context-menu-item {
+  font-size: 12.5px; text-align: left; padding: 6px 10px; border-radius: 4px;
+  border: none; background: transparent; color: var(--text-primary); cursor: pointer;
+}
+.context-menu-item:hover { background: var(--bg-hover); }
 
 .editor-body { flex: 1; display: flex; min-height: 0; background: var(--bg-void); position: relative; }
 

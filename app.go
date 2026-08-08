@@ -190,6 +190,47 @@ func (a *App) ReadFile(path string) (string, error) {
 	return string(content), nil
 }
 
+// validEntryName rejects empty names, path separators, and "." / ".." — a
+// name that could otherwise make CreateFile/CreateFolder escape dirPath or
+// silently no-op.
+func validEntryName(name string) error {
+	if name == "" || name == "." || name == ".." {
+		return fmt.Errorf("invalid name")
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("name cannot contain path separators")
+	}
+	return nil
+}
+
+// CreateFile creates a new empty file at dirPath/name and returns its full
+// path. Fails (rather than truncating) if something already exists there,
+// since this backs an explicit "New File" action.
+func (a *App) CreateFile(dirPath string, name string) (string, error) {
+	if err := validEntryName(name); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dirPath, name)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		return "", err
+	}
+	f.Close()
+	return path, nil
+}
+
+// CreateFolder creates a new directory at dirPath/name and returns its full path.
+func (a *App) CreateFolder(dirPath string, name string) (string, error) {
+	if err := validEntryName(name); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dirPath, name)
+	if err := os.Mkdir(path, 0755); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // currentLSP returns the active LSP client, if any, under lspMu — the single
 // point where a.lsp is read so every caller sees a consistent snapshot
 // instead of racing LspStart/LspStop on the raw field.
