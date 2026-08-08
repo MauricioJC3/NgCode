@@ -585,13 +585,27 @@ const confirmOkBtn = document.getElementById('confirm-ok') as HTMLButtonElement;
 const confirmCancelBtn = document.getElementById('confirm-cancel') as HTMLButtonElement;
 
 let confirmResolve: ((ok: boolean) => void) | null = null;
+// Queue for stacked confirm requests (e.g. an update-available prompt firing
+// while a window-close confirm is already pending). Without this, a second
+// askConfirm() call would overwrite confirmResolve and orphan the first
+// promise forever — fatal when that first promise is what unblocks Go's
+// beforeClose channel wait, since the app would then hang until force-killed.
+const confirmQueue: Array<{ message: string; resolve: (ok: boolean) => void }> = [];
 
-function askConfirm(message: string): Promise<boolean> {
+function showConfirm(message: string, resolve: (ok: boolean) => void) {
   confirmMessageEl.textContent = message;
   confirmOverlayEl.hidden = false;
   confirmOkBtn.focus();
+  confirmResolve = resolve;
+}
+
+function askConfirm(message: string): Promise<boolean> {
   return new Promise((resolve) => {
-    confirmResolve = resolve;
+    if (confirmResolve) {
+      confirmQueue.push({ message, resolve });
+      return;
+    }
+    showConfirm(message, resolve);
   });
 }
 
@@ -599,6 +613,9 @@ function closeConfirm(result: boolean) {
   confirmOverlayEl.hidden = true;
   confirmResolve?.(result);
   confirmResolve = null;
+
+  const next = confirmQueue.shift();
+  if (next) showConfirm(next.message, next.resolve);
 }
 
 confirmOkBtn.addEventListener('click', () => closeConfirm(true));

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -15,7 +16,9 @@ import (
 type App struct {
 	ctx           context.Context
 	closeAnswerCh chan bool
+	lspMu         sync.RWMutex
 	lsp           *lspClient
+	updaterMu     sync.Mutex
 	version       string
 	updater       *updateState
 }
@@ -71,7 +74,9 @@ func (a *App) checkForUpdates(ctx context.Context) {
 		return
 	}
 
+	a.updaterMu.Lock()
 	a.updater = state
+	a.updaterMu.Unlock()
 	runtime.EventsEmit(ctx, "update:available", UpdateInfo{
 		Version:        state.Version,
 		CurrentVersion: a.version,
@@ -93,8 +98,8 @@ func (a *App) ConfirmClose(shouldClose bool) {
 
 // shutdown stops any running gopls process once the window is actually closing
 func (a *App) shutdown(ctx context.Context) {
-	if a.lsp != nil {
-		_ = a.lsp.stop()
+	if client := a.currentLSP(); client != nil {
+		_ = client.stop()
 	}
 }
 
@@ -149,14 +154,18 @@ func (a *App) OpenFolder() (string, error) {
 	})
 }
 
-// ReadDir lists the immediate children of path, directories first, each group alphabetical
+// ReadDir lists the immediate children of path, directories first, each group alphabetical.
+// dirs/files start as non-nil empty slices (not `var dirs, files []DirEntry`) so an empty
+// directory serializes to JSON `[]` instead of `null` — the frontend calls .forEach on the
+// result, which throws on null and silently aborts opening the folder.
 func (a *App) ReadDir(path string) ([]DirEntry, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return nil, err
 	}
 
-	var dirs, files []DirEntry
+	dirs := []DirEntry{}
+	files := []DirEntry{}
 	for _, e := range entries {
 		item := DirEntry{Name: e.Name(), Path: filepath.Join(path, e.Name()), IsDir: e.IsDir()}
 		if e.IsDir() {
@@ -181,54 +190,75 @@ func (a *App) ReadFile(path string) (string, error) {
 	return string(content), nil
 }
 
+// currentLSP returns the active LSP client, if any, under lspMu — the single
+// point where a.lsp is read so every caller sees a consistent snapshot
+// instead of racing LspStart/LspStop on the raw field.
+func (a *App) currentLSP() *lspClient {
+	a.lspMu.RLock()
+	defer a.lspMu.RUnlock()
+	return a.lsp
+}
+
 // LspStart launches gopls rooted at rootPath, replacing any client already running
 func (a *App) LspStart(rootPath string) error {
-	if a.lsp != nil {
-		_ = a.lsp.stop()
-		a.lsp = nil
+	a.lspMu.Lock()
+	old := a.lsp
+	a.lsp = nil
+	a.lspMu.Unlock()
+	if old != nil {
+		_ = old.stop()
 	}
+
 	client, err := startLSPClient(a.ctx, rootPath)
 	if err != nil {
 		return err
 	}
+
+	a.lspMu.Lock()
 	a.lsp = client
+	a.lspMu.Unlock()
 	return nil
 }
 
 // LspStop shuts down the running gopls client, if any
 func (a *App) LspStop() error {
-	if a.lsp == nil {
+	a.lspMu.Lock()
+	client := a.lsp
+	a.lsp = nil
+	a.lspMu.Unlock()
+	if client == nil {
 		return nil
 	}
-	err := a.lsp.stop()
-	a.lsp = nil
-	return err
+	return client.stop()
 }
 
 // LspDidOpen notifies gopls that path is now open with the given content
 func (a *App) LspDidOpen(path string, content string) error {
-	if a.lsp == nil {
+	client := a.currentLSP()
+	if client == nil {
 		return nil
 	}
-	return a.lsp.didOpen(path, content)
+	return client.didOpen(path, content)
 }
 
 // LspDidChange notifies gopls of the current full content of path
 func (a *App) LspDidChange(path string, content string) error {
-	if a.lsp == nil {
+	client := a.currentLSP()
+	if client == nil {
 		return nil
 	}
-	return a.lsp.didChange(path, content)
+	return client.didChange(path, content)
 }
 
 // LspCompletion requests completions at a 0-indexed line/character position.
 // Returns the raw LSP JSON result as a string (json.RawMessage confuses the
 // Wails binding generator, which doesn't know that type and emits a broken import).
 func (a *App) LspCompletion(path string, line int, character int) (string, error) {
-	if a.lsp == nil {
+	client := a.currentLSP()
+	if client == nil {
 		return "", nil
 	}
-	result, err := a.lsp.completion(path, line, character)
+	result, err := client.completion(path, line, character)
 	if err != nil {
 		return "", err
 	}
@@ -239,10 +269,11 @@ func (a *App) LspCompletion(path string, line int, character int) (string, error
 // 0-indexed line/character position. Returns the raw LSP JSON result as a
 // string, same reasoning as LspCompletion.
 func (a *App) LspDefinition(path string, line int, character int) (string, error) {
-	if a.lsp == nil {
+	client := a.currentLSP()
+	if client == nil {
 		return "", nil
 	}
-	result, err := a.lsp.definition(path, line, character)
+	result, err := client.definition(path, line, character)
 	if err != nil {
 		return "", err
 	}
@@ -253,10 +284,11 @@ func (a *App) LspDefinition(path string, line int, character int) (string, error
 // line/character position. Returns the raw LSP JSON result as a string,
 // same reasoning as LspCompletion.
 func (a *App) LspHover(path string, line int, character int) (string, error) {
-	if a.lsp == nil {
+	client := a.currentLSP()
+	if client == nil {
 		return "", nil
 	}
-	result, err := a.lsp.hover(path, line, character)
+	result, err := client.hover(path, line, character)
 	if err != nil {
 		return "", err
 	}
@@ -274,10 +306,12 @@ func (a *App) LspHover(path string, line int, character int) (string, error) {
 // non-nil error the same way every other bound method's error is
 // surfaced: console.error, no dedicated toast/error UI.
 func (a *App) UpdateAccept() error {
-	if a.updater == nil {
+	a.updaterMu.Lock()
+	state := a.updater
+	a.updaterMu.Unlock()
+	if state == nil {
 		return fmt.Errorf("no update available to accept")
 	}
-	state := a.updater
 
 	assetPath, err := downloadAsset(a.ctx, state.AssetURL)
 	if err != nil {
@@ -316,7 +350,9 @@ func (a *App) UpdateAccept() error {
 		return err
 	}
 
+	a.updaterMu.Lock()
 	a.updater = nil
+	a.updaterMu.Unlock()
 	runtime.Quit(a.ctx)
 	return nil
 }
@@ -326,5 +362,7 @@ func (a *App) UpdateAccept() error {
 // there is no "remember dismiss" — the user is asked again on the next
 // successful background check.
 func (a *App) UpdateDismiss() {
+	a.updaterMu.Lock()
 	a.updater = nil
+	a.updaterMu.Unlock()
 }
