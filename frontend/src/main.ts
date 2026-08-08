@@ -16,6 +16,7 @@ import { linter, forceLinting, type Diagnostic } from '@codemirror/lint';
 import { search, searchKeymap } from '@codemirror/search';
 import {
   OpenFolder, ReadDir, ReadFile, SaveFile, ForceQuit, CreateFile, CreateFolder, MoveEntry,
+  DeleteEntry, RenameEntry,
   LspEnsureStarted, LspStopAll, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
   UpdateAccept, UpdateDismiss,
 } from '../wailsjs/go/main/App';
@@ -95,6 +96,8 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="context-menu" id="context-menu" hidden>
       <button class="context-menu-item" id="ctx-new-file" type="button">Nuevo archivo</button>
       <button class="context-menu-item" id="ctx-new-folder" type="button">Nueva carpeta</button>
+      <button class="context-menu-item" id="ctx-rename" type="button">Renombrar</button>
+      <button class="context-menu-item" id="ctx-delete" type="button">Eliminar</button>
     </div>
 
     <section class="editor-area">
@@ -808,6 +811,46 @@ async function moveEntryTo(srcPath: string, destDir: string) {
   }
 }
 
+async function renameEntry(path: string) {
+  if (!workspaceRoot) return;
+  const newName = window.prompt('Nuevo nombre:', fileName(path))?.trim();
+  if (!newName) return;
+
+  const parent = dirOf(path) || workspaceRoot;
+  try {
+    const newPath = await RenameEntry(path, newName, workspaceRoot);
+    remapTabPaths(path, newPath);
+  } catch (err) {
+    console.error(err);
+    window.alert(`No se pudo renombrar: ${err}`);
+  }
+  await refreshDir(parent);
+}
+
+async function deleteEntry(path: string, isFolder: boolean) {
+  if (!workspaceRoot) return;
+  const label = isFolder ? 'la carpeta' : 'el archivo';
+  const ok = await askConfirm(`¿Eliminar ${label} "${fileName(path)}" de forma permanente?`);
+  if (!ok) return;
+
+  const sep = path.includes('\\') ? '\\' : '/';
+  const affected = tabs.filter((t) => t.path === path || (isFolder && t.path.startsWith(path + sep)));
+  for (const tab of affected) {
+    await requestCloseTab(tab.path);
+  }
+  const stillOpen = affected.some((t) => tabs.some((open) => open.path === t.path));
+  if (stillOpen) return;
+
+  const parent = dirOf(path) || workspaceRoot;
+  try {
+    await DeleteEntry(path, workspaceRoot);
+  } catch (err) {
+    console.error(err);
+    window.alert(`No se pudo eliminar: ${err}`);
+  }
+  await refreshDir(parent);
+}
+
 function createFileRow(entry: main.DirEntry, depth: number): HTMLDivElement {
   const row = document.createElement('div');
   row.className = 'tree-row is-file';
@@ -824,6 +867,8 @@ function createFileRow(entry: main.DirEntry, depth: number): HTMLDivElement {
   row.addEventListener('click', open);
   row.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    else if (e.key === 'Delete') { e.preventDefault(); void deleteEntry(entry.Path, false); }
+    else if (e.key === 'F2') { e.preventDefault(); void renameEntry(entry.Path); }
   });
   makeDraggable(row, entry.Path);
   return row;
@@ -849,6 +894,8 @@ function createFolderRow(entry: main.DirEntry, depth: number): HTMLDivElement {
   row.addEventListener('click', toggle);
   row.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+    else if (e.key === 'Delete') { e.preventDefault(); void deleteEntry(entry.Path, true); }
+    else if (e.key === 'F2') { e.preventDefault(); void renameEntry(entry.Path); }
   });
   makeDraggable(row, entry.Path);
   makeDropTarget(row, () => entry.Path);
@@ -996,11 +1043,25 @@ document.getElementById('new-folder-btn')!.addEventListener('click', (e) => {
   if (workspaceRoot) void createFolderIn(workspaceRoot);
 });
 
-const contextMenuEl = document.getElementById('context-menu') as HTMLDivElement;
-let contextMenuDir: string | null = null;
+type ContextMenuKind = 'file' | 'folder' | 'root';
 
-function showContextMenu(x: number, y: number, dirPath: string) {
-  contextMenuDir = dirPath;
+const contextMenuEl = document.getElementById('context-menu') as HTMLDivElement;
+const ctxNewFileBtn = document.getElementById('ctx-new-file') as HTMLButtonElement;
+const ctxNewFolderBtn = document.getElementById('ctx-new-folder') as HTMLButtonElement;
+const ctxRenameBtn = document.getElementById('ctx-rename') as HTMLButtonElement;
+const ctxDeleteBtn = document.getElementById('ctx-delete') as HTMLButtonElement;
+let contextMenuPath: string | null = null;
+let contextMenuKind: ContextMenuKind | null = null;
+
+function showContextMenu(x: number, y: number, path: string, kind: ContextMenuKind) {
+  contextMenuPath = path;
+  contextMenuKind = kind;
+  // "New file"/"New folder" only make sense on a directory (folder row or
+  // root); "Rename"/"Delete" are hidden on the workspace root (hard guard).
+  ctxNewFileBtn.hidden = kind === 'file';
+  ctxNewFolderBtn.hidden = kind === 'file';
+  ctxRenameBtn.hidden = kind === 'root';
+  ctxDeleteBtn.hidden = kind === 'root';
   contextMenuEl.style.left = `${x}px`;
   contextMenuEl.style.top = `${y}px`;
   contextMenuEl.hidden = false;
@@ -1008,31 +1069,45 @@ function showContextMenu(x: number, y: number, dirPath: string) {
 
 function hideContextMenu() {
   contextMenuEl.hidden = true;
-  contextMenuDir = null;
+  contextMenuPath = null;
+  contextMenuKind = null;
 }
 
 treeEl.addEventListener('contextmenu', (e) => {
-  const row = (e.target as HTMLElement).closest<HTMLDivElement>('.tree-row[data-kind="folder"]');
+  const row = (e.target as HTMLElement).closest<HTMLDivElement>('.tree-row');
   if (!row) return;
   e.preventDefault();
-  showContextMenu(e.clientX, e.clientY, row.dataset.path!);
+  const kind: ContextMenuKind = row.dataset.kind === 'folder' ? 'folder' : 'file';
+  showContextMenu(e.clientX, e.clientY, row.dataset.path!, kind);
 });
 treeRootEl.addEventListener('contextmenu', (e) => {
   if (!workspaceRoot) return;
   e.preventDefault();
-  showContextMenu(e.clientX, e.clientY, workspaceRoot);
+  showContextMenu(e.clientX, e.clientY, workspaceRoot, 'root');
 });
 makeDropTarget(treeRootEl, () => workspaceRoot);
 
-document.getElementById('ctx-new-file')!.addEventListener('click', () => {
-  const dir = contextMenuDir;
+ctxNewFileBtn.addEventListener('click', () => {
+  const dir = contextMenuPath;
   hideContextMenu();
   if (dir) void createFileIn(dir);
 });
-document.getElementById('ctx-new-folder')!.addEventListener('click', () => {
-  const dir = contextMenuDir;
+ctxNewFolderBtn.addEventListener('click', () => {
+  const dir = contextMenuPath;
   hideContextMenu();
   if (dir) void createFolderIn(dir);
+});
+ctxRenameBtn.addEventListener('click', () => {
+  const path = contextMenuPath;
+  const kind = contextMenuKind;
+  hideContextMenu();
+  if (path && kind !== 'root') void renameEntry(path);
+});
+ctxDeleteBtn.addEventListener('click', () => {
+  const path = contextMenuPath;
+  const kind = contextMenuKind;
+  hideContextMenu();
+  if (path && kind !== 'root') void deleteEntry(path, kind === 'folder');
 });
 document.addEventListener('click', (e) => {
   if (!contextMenuEl.hidden && !contextMenuEl.contains(e.target as Node)) hideContextMenu();
