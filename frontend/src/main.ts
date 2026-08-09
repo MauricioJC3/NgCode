@@ -36,6 +36,7 @@ import {
   lspDiagnosticsForDoc, uriToPath, hoverContentsToText, parseDefinitionResponse,
   type LspDiagnostic,
 } from './lsp';
+import { remapPath } from './move';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -749,21 +750,12 @@ function makeDropTarget(el: HTMLElement, resolveDestDir: () => string | null) {
 // along). Without this, a moved-but-still-open file would keep saving to
 // the path it no longer lives at.
 function remapTabPaths(oldPath: string, newPath: string) {
-  const remap = (p: string): string | null => {
-    if (p === oldPath) return newPath;
-    const sep = p[oldPath.length];
-    if (p.startsWith(oldPath) && (sep === '/' || sep === '\\')) {
-      return newPath + sep + p.slice(oldPath.length + 1);
-    }
-    return null;
-  };
-
   for (const tab of tabs) {
-    const remapped = remap(tab.path);
+    const remapped = remapPath(oldPath, newPath, tab.path);
     if (remapped) tab.path = remapped;
   }
   if (activePath) {
-    const remapped = remap(activePath);
+    const remapped = remapPath(oldPath, newPath, activePath);
     if (remapped) {
       activePath = remapped;
       crumbEl.textContent = activePath;
