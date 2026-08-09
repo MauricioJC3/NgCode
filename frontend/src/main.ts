@@ -31,6 +31,7 @@ import {
   normalizeEditValue, shouldDiscardEdit,
   type InlineEditMode, type ActiveEdit,
 } from './inline-edit';
+import { enqueueOrShow, dequeueNext, type ConfirmOptions, type ConfirmRequest } from './confirm-queue';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -675,18 +676,15 @@ const confirmMessageEl = document.getElementById('confirm-message')!;
 const confirmOkBtn = document.getElementById('confirm-ok') as HTMLButtonElement;
 const confirmCancelBtn = document.getElementById('confirm-cancel') as HTMLButtonElement;
 
-interface ConfirmOptions {
-  okLabel?: string;
-  cancelLabel?: string;
-}
-
 let confirmResolve: ((ok: boolean) => void) | null = null;
 // Queue for stacked confirm requests (e.g. an update-available prompt firing
 // while a window-close confirm is already pending). Without this, a second
 // askConfirm() call would overwrite confirmResolve and orphan the first
 // promise forever — fatal when that first promise is what unblocks Go's
 // beforeClose channel wait, since the app would then hang until force-killed.
-const confirmQueue: Array<{ message: string; resolve: (ok: boolean) => void; opts?: ConfirmOptions }> = [];
+// The enqueue/dequeue decision itself lives in confirm-queue.ts (pure,
+// unit-tested); this array plus confirmResolve are the actual state.
+const confirmQueue: ConfirmRequest[] = [];
 
 function showConfirm(message: string, resolve: (ok: boolean) => void, opts?: ConfirmOptions) {
   confirmMessageEl.textContent = message;
@@ -702,11 +700,9 @@ function showConfirm(message: string, resolve: (ok: boolean) => void, opts?: Con
 // "Cerrar sin guardar" / "Cancelar" — the same modal backs both flows).
 function askConfirm(message: string, opts?: ConfirmOptions): Promise<boolean> {
   return new Promise((resolve) => {
-    if (confirmResolve) {
-      confirmQueue.push({ message, resolve, opts });
-      return;
-    }
-    showConfirm(message, resolve, opts);
+    const request: ConfirmRequest = { message, resolve, opts };
+    const decision = enqueueOrShow(confirmQueue, request, confirmResolve !== null);
+    if (decision === 'show-now') showConfirm(message, resolve, opts);
   });
 }
 
@@ -715,7 +711,7 @@ function closeConfirm(result: boolean) {
   confirmResolve?.(result);
   confirmResolve = null;
 
-  const next = confirmQueue.shift();
+  const next = dequeueNext(confirmQueue);
   if (next) showConfirm(next.message, next.resolve, next.opts);
 }
 
