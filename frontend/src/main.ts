@@ -2,7 +2,7 @@ import './style.css';
 import './app.css';
 
 import { EditorView, keymap, type ViewUpdate, hoverTooltip, type Tooltip } from '@codemirror/view';
-import { EditorState, type Text } from '@codemirror/state';
+import { EditorState } from '@codemirror/state';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import { basicSetup } from 'codemirror';
@@ -12,7 +12,7 @@ import { json } from '@codemirror/lang-json';
 import { css } from '@codemirror/lang-css';
 import { markdown } from '@codemirror/lang-markdown';
 import { autocompletion, type CompletionContext, type CompletionResult, type Completion } from '@codemirror/autocomplete';
-import { linter, forceLinting, type Diagnostic } from '@codemirror/lint';
+import { linter, forceLinting } from '@codemirror/lint';
 import { search, searchKeymap } from '@codemirror/search';
 import {
   OpenFolder, ReadDir, ReadFile, SaveFile, ForceQuit, CreateFile, CreateFolder, MoveEntry,
@@ -32,6 +32,10 @@ import {
   type InlineEditMode, type ActiveEdit,
 } from './inline-edit';
 import { enqueueOrShow, dequeueNext, type ConfirmOptions, type ConfirmRequest } from './confirm-queue';
+import {
+  lspDiagnosticsForDoc, uriToPath, hoverContentsToText, parseDefinitionResponse,
+  type LspDiagnostic,
+} from './lsp';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -256,31 +260,6 @@ function lspActiveFor(path: string | null): boolean {
 
 const diagnosticsByPath = new Map<string, LspDiagnostic[]>();
 
-interface LspDiagnostic {
-  range: { start: { line: number; character: number }; end: { line: number; character: number } };
-  severity?: number;
-  message: string;
-}
-
-function lspSeverityToCM(severity: number | undefined): 'error' | 'warning' | 'info' {
-  if (severity === 1) return 'error';
-  if (severity === 2) return 'warning';
-  return 'info';
-}
-
-function lspDiagnosticsForDoc(doc: Text, raw: LspDiagnostic[]): Diagnostic[] {
-  const out: Diagnostic[] = [];
-  for (const d of raw) {
-    if (d.range.start.line >= doc.lines || d.range.end.line >= doc.lines) continue;
-    const startLine = doc.line(d.range.start.line + 1);
-    const endLine = doc.line(d.range.end.line + 1);
-    const from = Math.min(startLine.from + d.range.start.character, doc.length);
-    const to = Math.max(Math.min(endLine.from + d.range.end.character, doc.length), from);
-    out.push({ from, to, severity: lspSeverityToCM(d.severity), message: d.message });
-  }
-  return out;
-}
-
 const lspLinter = linter((view) => {
   if (!activePath) return [];
   const raw = diagnosticsByPath.get(activePath);
@@ -324,26 +303,6 @@ async function lspCompletionSource(context: CompletionContext): Promise<Completi
 }
 
 const lspCompletion = autocompletion({ override: [lspCompletionSource] });
-
-// LSP paths come back as file:// URIs; this is the frontend counterpart of the
-// backend's fromFileURI. Forward slashes are left as-is (Go's os package accepts
-// them on Windows too) so no OS-specific separator handling is needed here.
-function uriToPath(uri: string): string {
-  let p = uri.startsWith('file://') ? uri.slice('file://'.length) : uri;
-  if (p.length >= 3 && p[0] === '/' && p[2] === ':') p = p.slice(1);
-  return p;
-}
-
-type LspHoverContent = string | { kind?: string; value?: string };
-
-function hoverContentsToText(contents: LspHoverContent | LspHoverContent[] | undefined): string {
-  if (!contents) return '';
-  if (typeof contents === 'string') return contents;
-  if (Array.isArray(contents)) {
-    return contents.map((c) => (typeof c === 'string' ? c : c.value ?? '')).filter(Boolean).join('\n\n');
-  }
-  return contents.value ?? '';
-}
 
 const lspHover = hoverTooltip(async (view, pos): Promise<Tooltip | null> => {
   if (!activePath || !lspActiveFor(activePath)) return null;
@@ -396,16 +355,9 @@ async function goToDefinitionAt(view: EditorView, pos: number) {
   }
   if (!raw) return;
 
-  let parsed: any;
-  try { parsed = JSON.parse(raw); } catch { return; }
-  // Response can be Location | Location[] | LocationLink[]; the common gopls
-  // case is a single-element array, so taking the first result covers it.
-  const first = Array.isArray(parsed) ? parsed[0] : parsed;
-  if (!first) return;
-
-  const uri: string | undefined = first.uri ?? first.targetUri;
-  const range = first.range ?? first.targetSelectionRange;
-  if (!uri || !range?.start) return;
+  const parsed = parseDefinitionResponse(raw);
+  if (!parsed) return;
+  const { uri, range } = parsed;
 
   const targetPath = uriToPath(uri);
   if (targetPath === activePath) {
