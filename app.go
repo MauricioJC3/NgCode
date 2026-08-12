@@ -31,6 +31,13 @@ type App struct {
 	searchMu  sync.Mutex
 	searchGen int64
 
+	// terminals holds at most one running pty-backed shell session in v1
+	// (see terminal.go), keyed by UUID so multi-terminal support later
+	// doesn't require an API break. Drained and killed by ForceQuit before
+	// os.Exit, same swap pattern as stopAllLSP/lspClients above.
+	terminalMu sync.Mutex
+	terminals  map[string]*terminalSession
+
 	updaterMu sync.Mutex
 	version   string
 	updater   *updateState
