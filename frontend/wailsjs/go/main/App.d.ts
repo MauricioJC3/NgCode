@@ -10,6 +10,10 @@ export function DeleteEntry(arg1:string,arg2:string):Promise<void>;
 
 export function ForceQuit():Promise<void>;
 
+export function GitDiffForFile(arg1:string):Promise<main.GitDiffResult>;
+
+export function GitStatus(arg1:string):Promise<void>;
+
 export function LspCompletion(arg1:string,arg2:number,arg3:number):Promise<string>;
 
 export function LspDefinition(arg1:string,arg2:number,arg3:number):Promise<string>;

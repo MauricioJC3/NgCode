@@ -1,8 +1,8 @@
 import './style.css';
 import './app.css';
 
-import { EditorView, keymap, type ViewUpdate, hoverTooltip, type Tooltip } from '@codemirror/view';
-import { EditorState } from '@codemirror/state';
+import { EditorView, keymap, type ViewUpdate, hoverTooltip, type Tooltip, gutter, GutterMarker } from '@codemirror/view';
+import { EditorState, StateField, StateEffect, RangeSet, RangeSetBuilder } from '@codemirror/state';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import { basicSetup } from 'codemirror';
@@ -19,6 +19,7 @@ import {
   DeleteEntry, RenameEntry,
   LspEnsureStarted, LspStopAll, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
   UpdateAccept, UpdateDismiss, SearchInWorkspace, SearchCancel,
+  GitStatus, GitDiffForFile,
 } from '../wailsjs/go/main/App';
 import type { main } from '../wailsjs/go/models';
 import { EventsOn } from '../wailsjs/runtime/runtime';
@@ -37,6 +38,7 @@ import {
   type LspDiagnostic,
 } from './lsp';
 import { remapPath } from './move';
+import { gitBadgeClass, gitDiffMarkers, type GitDiffResult, type GitGutterMark } from './git';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -403,6 +405,71 @@ function onEditorUpdate(update: ViewUpdate) {
   if (update.docChanged) scheduleLspDidChange();
 }
 
+// ---- git diff gutter ----
+//
+// Read-only gutter markers for the currently open file, diffed against
+// HEAD (see git.ts's gitDiffMarkers/GitDiffForFile in app.go). A
+// StateEffect carries a fresh marker list into the StateField that backs
+// the gutter's RangeSet — mirrors CodeMirror's own recommended
+// "external data -> effect -> field -> gutter" pattern, the same shape
+// diagnosticsByPath/lspLinter uses for LSP diagnostics, just via a
+// dispatched effect instead of a linter re-run.
+
+class GitLineMarker extends GutterMarker {
+  constructor(readonly kind: GitGutterMark['type']) {
+    super();
+  }
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = `cm-git-gutter-mark cm-git-gutter-${this.kind}`;
+    return span;
+  }
+}
+
+const setGitGutterMarks = StateEffect.define<GitGutterMark[]>();
+
+function buildGitGutterRangeSet(doc: EditorState['doc'], marks: GitGutterMark[]) {
+  const builder = new RangeSetBuilder<GutterMarker>();
+  for (const mark of marks) {
+    if (mark.line0 < 0 || mark.line0 >= doc.lines) continue;
+    const line = doc.line(mark.line0 + 1);
+    builder.add(line.from, line.from, new GitLineMarker(mark.type));
+  }
+  return builder.finish();
+}
+
+const gitGutterField = StateField.define<RangeSet<GutterMarker>>({
+  create: () => RangeSet.empty,
+  update(marks, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setGitGutterMarks)) return buildGitGutterRangeSet(tr.state.doc, effect.value);
+    }
+    return tr.docChanged ? marks.map(tr.changes) : marks;
+  },
+});
+
+const gitGutterExtension = [
+  gitGutterField,
+  gutter({
+    class: 'cm-git-gutter',
+    markers: (view) => view.state.field(gitGutterField),
+  }),
+];
+
+// requestGitDiff fetches the HEAD-relative diff for path and, once it
+// resolves, dispatches its markers into the live editor — unless the user
+// has already switched to a different tab by then, in which case the
+// (now-stale) response is discarded (spec: diff transport has no
+// generation guard, same as LspHover; the frontend does the discarding).
+function requestGitDiff(path: string) {
+  GitDiffForFile(path)
+    .then((result: GitDiffResult) => {
+      if (path !== activePath) return;
+      editor.dispatch({ effects: setGitGutterMarks.of(gitDiffMarkers(result)) });
+    })
+    .catch((err) => console.error(err));
+}
+
 function buildState(content: string, path: string): EditorState {
   const lspExtensions = lspActiveFor(path) ? [lspCompletion, lspLinter, lspHover, lspDefinitionClick] : [];
   return EditorState.create({
@@ -416,6 +483,7 @@ function buildState(content: string, path: string): EditorState {
       search({ top: true }),
       keymap.of(searchKeymap),
       ...lspExtensions,
+      ...gitGutterExtension,
     ],
   });
 }
@@ -510,6 +578,7 @@ function activateTab(path: string) {
   editorHostEl.style.display = '';
   editor.setState(buildState(tab.content, tab.path));
   updateCursorStatus();
+  requestGitDiff(path);
 
   crumbEl.textContent = tab.path;
   statusLangEl.textContent = languageLabel(tab.path);
@@ -609,6 +678,8 @@ function saveActiveTab() {
     .then(() => {
       tab.dirty = false;
       renderTabs();
+      refreshGitStatus();
+      requestGitDiff(tab.path);
     })
     .catch((err) => console.error(err));
 }
@@ -718,6 +789,54 @@ const sidebarEmptyEl = document.getElementById('sidebar-empty')!;
 // by refreshDir and toggleFolder's rebuild branch so a directory rebuild
 // discards a stale edit rather than orphaning its input/listeners.
 let activeEdit: ActiveEdit | null = null;
+
+// ---- git status badges ----
+//
+// gitStatusByPath is the latest "git:status" snapshot (path -> porcelain XY
+// code); a path absent from it is clean (see git.ts's gitBadgeClass). Kept
+// as one flat map covering the whole repo (GitStatus always scans from
+// workspaceRoot, never a subfolder — design: "Status scope"), so a single
+// refreshGitBadges() rescan after any refresh can re-badge every currently
+// rendered row, however deep, without re-querying per folder.
+
+let gitStatusByPath: Record<string, string> = {};
+
+function applyGitBadge(row: HTMLDivElement, path: string) {
+  row.classList.remove('git-modified', 'git-added', 'git-untracked', 'git-deleted');
+  const cls = gitBadgeClass(gitStatusByPath[path]);
+  if (cls) {
+    row.classList.add(`git-${cls}`);
+    row.dataset.gitStatus = cls;
+  } else {
+    delete row.dataset.gitStatus;
+  }
+}
+
+// refreshGitBadges rescans every currently rendered tree row — spec:
+// "must compute status only for currently expanded/rendered nodes";
+// collapsed subtrees have no rows in the DOM yet, so they're naturally
+// skipped here without any extra bookkeeping.
+function refreshGitBadges() {
+  treeEl.querySelectorAll<HTMLDivElement>('.tree-row[data-path]').forEach((row) => {
+    applyGitBadge(row, row.dataset.path!);
+  });
+}
+
+// refreshGitStatus triggers a backend rescan (GitStatus is event-driven and
+// generation-guarded on the Go side — see app.go); a workspace that isn't a
+// git repo or has no `git` on PATH simply never gets a "git:status" event,
+// which is the silent no-op spec requires.
+function refreshGitStatus() {
+  if (!workspaceRoot) return;
+  GitStatus(workspaceRoot).catch((err) => console.error(err));
+}
+
+window.addEventListener('focus', refreshGitStatus);
+
+EventsOn('git:status', (payload: { generation: number; root: string; statuses: Record<string, string> }) => {
+  gitStatusByPath = payload.statuses ?? {};
+  refreshGitBadges();
+});
 
 // ---- drag-and-drop move ----
 
@@ -837,6 +956,7 @@ function createFileRow(entry: main.DirEntry, depth: number): HTMLDivElement {
   const label = document.createElement('span');
   label.textContent = entry.Name;
   row.appendChild(label);
+  applyGitBadge(row, entry.Path);
 
   const open = () => openFileFromTree(entry.Path);
   row.addEventListener('click', open);
@@ -864,6 +984,7 @@ function createFolderRow(entry: main.DirEntry, depth: number): HTMLDivElement {
   const label = document.createElement('span');
   label.textContent = entry.Name;
   row.appendChild(label);
+  applyGitBadge(row, entry.Path);
 
   const toggle = () => toggleFolder(row, entry.Path, depth);
   row.addEventListener('click', toggle);
@@ -887,6 +1008,7 @@ async function toggleFolder(row: HTMLDivElement, path: string, depth: number) {
     next!.hidden = collapsing;
     row.dataset.expanded = String(!collapsing);
     chev.classList.toggle('is-closed', collapsing);
+    if (!collapsing) refreshGitStatus(); // re-expanding an already-loaded subtree
     return;
   }
 
@@ -904,6 +1026,7 @@ async function toggleFolder(row: HTMLDivElement, path: string, depth: number) {
     row.after(container);
     row.dataset.expanded = 'true';
     chev.classList.remove('is-closed');
+    refreshGitStatus();
   } catch (err) {
     console.error(err);
   }
