@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { gitBadgeClass, gitDiffMarkers } from './git';
+import { gitBadgeClass, gitDiffMarkers, folderGitBadgeClass } from './git';
 
 describe('gitBadgeClass', () => {
   it('classifies an unstaged modified file (" M")', () => {
@@ -65,5 +65,41 @@ describe('gitDiffMarkers', () => {
 
   it('returns an empty array for an empty diff result', () => {
     expect(gitDiffMarkers({ added: [], modified: [], removed: [] })).toEqual([]);
+  });
+});
+
+describe('folderGitBadgeClass', () => {
+  it('returns "changed" when a direct child file is non-clean', () => {
+    const statuses = { '/repo/src/main.ts': ' M' };
+    expect(folderGitBadgeClass(statuses, '/repo/src')).toBe('changed');
+  });
+
+  it('returns "changed" when a descendant two levels deep is non-clean', () => {
+    const statuses = { '/repo/src/sub/deep/file.ts': ' M' };
+    expect(folderGitBadgeClass(statuses, '/repo/src')).toBe('changed');
+  });
+
+  it('returns null when no descendant appears in the status map', () => {
+    const statuses = { '/repo/other/file.ts': ' M' };
+    expect(folderGitBadgeClass(statuses, '/repo/src')).toBeNull();
+  });
+
+  it('returns null for an empty status map', () => {
+    expect(folderGitBadgeClass({}, '/repo/src')).toBeNull();
+  });
+
+  it('matches descendants using a backslash path separator (Windows)', () => {
+    const statuses = { 'C:\\repo\\src\\sub\\file.ts': ' M' };
+    expect(folderGitBadgeClass(statuses, 'C:\\repo\\src')).toBe('changed');
+  });
+
+  it('does not match a sibling folder whose name is a string-prefix of the folder path ("src" vs "src-utils")', () => {
+    const statuses = { '/repo/src-utils/file.ts': ' M' };
+    expect(folderGitBadgeClass(statuses, '/repo/src')).toBeNull();
+  });
+
+  it("does not count the folder's own literal path as a descendant", () => {
+    const statuses = { '/repo/src': ' M' };
+    expect(folderGitBadgeClass(statuses, '/repo/src')).toBeNull();
   });
 });

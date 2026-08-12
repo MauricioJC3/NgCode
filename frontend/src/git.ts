@@ -27,6 +27,26 @@ export function gitBadgeClass(xy: string | undefined): 'modified' | 'added' | 'u
   return null;
 }
 
+// folderGitBadgeClass implements the spec's "Folder badge aggregation and
+// scope" requirement: a folder row shows an aggregated indicator when any
+// descendant, at any depth, is non-clean. `statuses` is the same flat
+// path -> porcelain XY map GitStatus hands back (git never emits a
+// directory as a status-map key, so a direct lookup by the folder's own
+// path — what applyGitBadge used to do — always misses; this scans for any
+// key nested under folderPath instead). Only a path strictly *under*
+// folderPath counts: the folder's own literal path is not a descendant,
+// and a sibling whose name merely starts with the same characters (e.g.
+// "src-utils" vs "src") must not match — both separators are checked
+// since paths can come from either a POSIX or Windows workspace root.
+export function folderGitBadgeClass(statuses: Record<string, string>, folderPath: string): 'changed' | null {
+  const slashPrefix = folderPath + '/';
+  const backslashPrefix = folderPath + '\\';
+  for (const path in statuses) {
+    if (path.startsWith(slashPrefix) || path.startsWith(backslashPrefix)) return 'changed';
+  }
+  return null;
+}
+
 export interface GitDiffResult {
   added: number[];
   modified: number[];

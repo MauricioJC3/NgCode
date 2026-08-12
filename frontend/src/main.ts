@@ -38,7 +38,7 @@ import {
   type LspDiagnostic,
 } from './lsp';
 import { remapPath } from './move';
-import { gitBadgeClass, gitDiffMarkers, type GitDiffResult, type GitGutterMark } from './git';
+import { gitBadgeClass, gitDiffMarkers, folderGitBadgeClass, type GitDiffResult, type GitGutterMark } from './git';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -802,8 +802,14 @@ let activeEdit: ActiveEdit | null = null;
 let gitStatusByPath: Record<string, string> = {};
 
 function applyGitBadge(row: HTMLDivElement, path: string) {
-  row.classList.remove('git-modified', 'git-added', 'git-untracked', 'git-deleted');
-  const cls = gitBadgeClass(gitStatusByPath[path]);
+  row.classList.remove('git-modified', 'git-added', 'git-untracked', 'git-deleted', 'git-changed');
+  // Folder rows never have their own path as a key in gitStatusByPath (git
+  // status --porcelain only ever lists files) — spec's "Folder badge
+  // aggregation and scope" requires an aggregated indicator instead, so a
+  // folder row re-derives its badge from its descendants each time.
+  const cls = row.dataset.kind === 'folder'
+    ? folderGitBadgeClass(gitStatusByPath, path)
+    : gitBadgeClass(gitStatusByPath[path]);
   if (cls) {
     row.classList.add(`git-${cls}`);
     row.dataset.gitStatus = cls;
