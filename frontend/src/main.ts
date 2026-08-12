@@ -14,11 +14,15 @@ import { markdown } from '@codemirror/lang-markdown';
 import { autocompletion, type CompletionContext, type CompletionResult, type Completion } from '@codemirror/autocomplete';
 import { linter, forceLinting } from '@codemirror/lint';
 import { search, searchKeymap } from '@codemirror/search';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
 import {
   OpenFolder, ReadDir, ReadFile, SaveFile, ForceQuit, CreateFile, CreateFolder, MoveEntry,
   DeleteEntry, RenameEntry,
   LspEnsureStarted, LspStopAll, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
   UpdateAccept, UpdateDismiss, SearchInWorkspace, SearchCancel,
+  StartTerminal, WriteToTerminal, ResizeTerminal,
 } from '../wailsjs/go/main/App';
 import type { main } from '../wailsjs/go/models';
 import { EventsOn } from '../wailsjs/runtime/runtime';
@@ -37,6 +41,7 @@ import {
   type LspDiagnostic,
 } from './lsp';
 import { remapPath } from './move';
+import { clampPanelHeight, isTerminalToggleShortcut } from './terminal';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_FOLDER = '<svg class="ico icon-sm" viewBox="0 0 16 16" fill="none"><path d="M2 4.2A1 1 0 0 1 3 3.2h2.6l1 1.2H13a1 1 0 0 1 1 1v7.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.2Z" stroke="currentColor" stroke-width="1.2"/></svg>';
@@ -135,6 +140,15 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
           <p>Ningún archivo abierto</p>
           <span>Elegí un archivo del explorador para editarlo.</span>
         </div>
+      </div>
+      <div class="terminal-panel" id="terminal-panel" hidden>
+        <div class="terminal-resize-handle" id="terminal-resize-handle"></div>
+        <div class="terminal-panel-header">
+          <span class="terminal-panel-title">Terminal</span>
+          <button class="terminal-close-btn" id="terminal-close-btn" type="button" aria-label="Cerrar terminal">${ICON_CLOSE}</button>
+        </div>
+        <div class="terminal-body" id="terminal-body"></div>
+        <div class="terminal-error" id="terminal-error" hidden></div>
       </div>
     </section>
 
@@ -1463,6 +1477,164 @@ document.addEventListener('click', (e) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !contextMenuEl.hidden) hideContextMenu();
+});
+
+// ---- integrated terminal ----
+//
+// v1 supports at most one live terminal session (see terminal.go's
+// App.StartTerminal — reused, not re-spawned, on every reopen). The
+// panel's open/closed CSS state is independent of the session's lifetime:
+// closing the panel only hides it (spec's "Session Persists When Panel Is
+// Closed") — nothing in this file ever calls KillTerminal; the session is
+// only torn down by the backend's ForceQuit on app close.
+//
+// Resize uses @xterm/addon-fit's FitAddon.fit() as the actual col/row
+// computation (it already floors pixel-width/cell-width the same way
+// terminal.ts's resizeToCols/resizeToRows do — see FitAddon's
+// proposeDimensions — via xterm's private renderer metrics, which aren't
+// reachable from here without duplicating that private API access).
+// terminal.ts's pure functions remain the tested, DOM-independent
+// formalization of that same floor-not-round contract.
+
+const terminalPanelEl = document.getElementById('terminal-panel')!;
+const terminalResizeHandleEl = document.getElementById('terminal-resize-handle')!;
+const terminalBodyEl = document.getElementById('terminal-body')!;
+const terminalErrorEl = document.getElementById('terminal-error')!;
+const terminalCloseBtn = document.getElementById('terminal-close-btn') as HTMLButtonElement;
+
+const TERMINAL_PANEL_MIN_HEIGHT = 120;
+const TERMINAL_PANEL_MAX_HEIGHT = 600;
+const TERMINAL_PANEL_DEFAULT_HEIGHT = 240;
+
+let terminalId: string | null = null;
+let terminalXterm: Terminal | null = null;
+let terminalFit: FitAddon | null = null;
+let terminalOutputSubscribed = false;
+
+function isTerminalPanelOpen(): boolean {
+  return !terminalPanelEl.hidden;
+}
+
+function setTerminalPanelHeight(height: number) {
+  const clamped = clampPanelHeight(height, TERMINAL_PANEL_MIN_HEIGHT, TERMINAL_PANEL_MAX_HEIGHT);
+  terminalPanelEl.style.height = `${clamped}px`;
+}
+
+// Subscribed exactly once, the first time a session successfully starts —
+// mirrors the app:close-requested EventsOn call above (set up once,
+// global for the app's lifetime). Guarded by id so a stale event for a
+// session that's already gone (shouldn't happen in v1's single-session
+// model, but cheap to guard) is dropped instead of misdirected.
+function ensureTerminalOutputSubscription() {
+  if (terminalOutputSubscribed) return;
+  terminalOutputSubscribed = true;
+  EventsOn('terminal:output', (payload: { id: string; data: string }) => {
+    if (payload.id !== terminalId || !terminalXterm) return;
+    terminalXterm.write(payload.data);
+  });
+}
+
+function showTerminalError(message: string) {
+  terminalBodyEl.hidden = true;
+  terminalErrorEl.hidden = false;
+  terminalErrorEl.textContent = `Failed to start shell: ${message}`;
+}
+
+function mountXterm() {
+  terminalBodyEl.hidden = false;
+  terminalErrorEl.hidden = true;
+  if (terminalXterm) return;
+
+  terminalXterm = new Terminal({
+    fontFamily: 'ui-monospace, "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono", monospace',
+    fontSize: 13,
+    theme: { background: '#12171c' },
+  });
+  terminalFit = new FitAddon();
+  terminalXterm.loadAddon(terminalFit);
+  terminalXterm.open(terminalBodyEl);
+  terminalFit.fit();
+
+  terminalXterm.onData((data) => {
+    if (terminalId) void WriteToTerminal(terminalId, data);
+  });
+}
+
+async function toggleTerminalPanel() {
+  if (isTerminalPanelOpen()) {
+    terminalPanelEl.hidden = true;
+    return;
+  }
+
+  terminalPanelEl.hidden = false;
+  if (terminalPanelEl.style.height === '') setTerminalPanelHeight(TERMINAL_PANEL_DEFAULT_HEIGHT);
+
+  if (terminalId) {
+    // Reattach to the already-running session — no new StartTerminal call
+    // (spec's "Reopen reuses the existing session").
+    mountXterm();
+    terminalFit?.fit();
+    return;
+  }
+
+  try {
+    const id = await StartTerminal(workspaceRoot ?? '');
+    terminalId = id;
+    ensureTerminalOutputSubscription();
+    mountXterm();
+    terminalFit?.fit();
+    if (terminalXterm) void ResizeTerminal(id, terminalXterm.cols, terminalXterm.rows);
+  } catch (err) {
+    showTerminalError(String(err));
+  }
+}
+
+terminalCloseBtn.addEventListener('click', () => {
+  terminalPanelEl.hidden = true;
+});
+
+// Registered on the capture phase (the `true` third argument) rather than
+// the default bubble phase — this is what guarantees the shortcut fires
+// even while the terminal itself has focus: xterm.js attaches its own
+// keydown listener directly on its element, and a bubble-phase window
+// listener would run AFTER that (and could be suppressed by
+// stopPropagation()). A capture-phase window listener runs BEFORE the
+// event ever reaches xterm's element, so it can never be swallowed.
+window.addEventListener('keydown', (e) => {
+  if (isTerminalToggleShortcut(e)) {
+    e.preventDefault();
+    void toggleTerminalPanel();
+  }
+}, true);
+
+// ---- terminal drag-resize ----
+
+let terminalResizing = false;
+let terminalResizeStartY = 0;
+let terminalResizeStartHeight = 0;
+
+terminalResizeHandleEl.addEventListener('mousedown', (e) => {
+  terminalResizing = true;
+  terminalResizeStartY = e.clientY;
+  terminalResizeStartHeight = terminalPanelEl.getBoundingClientRect().height;
+  e.preventDefault();
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!terminalResizing) return;
+  // The resize handle sits on the panel's top edge: dragging up (mouseY
+  // decreases) should grow the panel, hence startY - clientY rather than
+  // the reverse.
+  const delta = terminalResizeStartY - e.clientY;
+  setTerminalPanelHeight(terminalResizeStartHeight + delta);
+  terminalFit?.fit();
+  if (terminalId && terminalXterm) {
+    void ResizeTerminal(terminalId, terminalXterm.cols, terminalXterm.rows);
+  }
+});
+
+window.addEventListener('mouseup', () => {
+  terminalResizing = false;
 });
 
 // ---- theme toggle ----
