@@ -35,11 +35,11 @@ export namespace main {
 	    added: number[];
 	    modified: number[];
 	    removed: number[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GitDiffResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
