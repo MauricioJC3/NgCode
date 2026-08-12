@@ -60,6 +60,15 @@ func defaultSpawnTerminal(shell, cwd string) (pty.Pty, *pty.Cmd, error) {
 		_ = p.Close()
 		return nil, nil, err
 	}
+	// terminalAfterSpawn is a no-op on Unix (terminal_unix.go) and creates
+	// a Job Object on Windows (terminal_windows.go) — must run immediately
+	// after Start() succeeds, before the shell has a chance to spawn any
+	// children, so Windows' automatic child-inherits-job behavior covers
+	// the whole tree from the start.
+	if err := terminalAfterSpawn(cmd); err != nil {
+		_ = p.Close()
+		return nil, nil, err
+	}
 	return p, cmd, nil
 }
 
@@ -177,19 +186,30 @@ func (a *App) KillTerminal(id string) error {
 	return terminalKillFunc(sess)
 }
 
+// terminalEmit sends one terminal event to the frontend. Package-level var
+// (mirrors terminalSpawnFunc/terminalKillFunc's injection shape) so tests
+// can inject a spy that captures "terminal:output" events instead of
+// requiring a real Wails runtime context — terminal_integration_test.go
+// swaps this to observe output from a real pty spawn. The production
+// default guards a.ctx == nil the same way search.go's runSearch does for
+// a bare &App{} used directly in tests: runtime.EventsEmit would otherwise
+// call log.Fatalf (os.Exit) on a nil context.
+var terminalEmit = func(a *App, event string, payload interface{}) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, event, payload)
+}
+
 // readTerminalOutput pumps sess's pty output to the frontend via
-// "terminal:output" events, chunk by chunk, until the pty read fails
-// (EOF after the shell exits, or an error following KillTerminal closing
-// the pty). Mirrors runSearch's a.ctx-nil guard in search.go: a bare
-// &App{} used directly in tests has no Wails runtime context, and
-// runtime.EventsEmit would otherwise call log.Fatalf (os.Exit) on a nil
-// context.
+// terminalEmit, chunk by chunk, until the pty read fails (EOF after the
+// shell exits, or an error following KillTerminal closing the pty).
 func (a *App) readTerminalOutput(sess *terminalSession) {
 	buf := make([]byte, terminalReadChunkSize)
 	for {
 		n, err := sess.pty.Read(buf)
-		if n > 0 && a.ctx != nil {
-			runtime.EventsEmit(a.ctx, "terminal:output", TerminalOutput{ID: sess.id, Data: string(buf[:n])})
+		if n > 0 {
+			terminalEmit(a, "terminal:output", TerminalOutput{ID: sess.id, Data: string(buf[:n])})
 		}
 		if err != nil {
 			return

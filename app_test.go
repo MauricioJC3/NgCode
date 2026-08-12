@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -573,4 +574,71 @@ func TestCreateFolder(t *testing.T) {
 			t.Errorf("error = %q, want %q", err.Error(), wantMsg)
 		}
 	})
+}
+
+// --- ForceQuit / terminal cleanup -------------------------------------------
+//
+// ForceQuit calls os.Exit(0) as its last step, so these tests swap osExit
+// (a package-level var in app.go) for a no-op recorder — this exercises
+// the REAL ForceQuit method end to end (SearchCancel, LSP drain, terminal
+// drain) without actually exiting the test process, rather than
+// duplicating ForceQuit's drain logic into a separate untested-in-practice
+// helper.
+
+func TestForceQuitDrainsAndKillsAllTerminals(t *testing.T) {
+	origExit := osExit
+	osExit = func(code int) {}
+	defer func() { osExit = origExit }()
+
+	origKill := terminalKillFunc
+	var killedMu sync.Mutex
+	var killed []string
+	terminalKillFunc = func(sess *terminalSession) error {
+		killedMu.Lock()
+		killed = append(killed, sess.id)
+		killedMu.Unlock()
+		return nil
+	}
+	defer func() { terminalKillFunc = origKill }()
+
+	app := &App{
+		terminals: map[string]*terminalSession{
+			"a": {id: "a"},
+			"b": {id: "b"},
+		},
+	}
+
+	app.ForceQuit()
+
+	if len(killed) != 2 {
+		t.Fatalf("expected terminalKillFunc invoked once per session (2 total), got %d: %v", len(killed), killed)
+	}
+	if len(app.terminals) != 0 {
+		t.Errorf("expected a.terminals empty after ForceQuit, got %d entries", len(app.terminals))
+	}
+}
+
+func TestForceQuitWithNoTerminalSessionsIsNoOp(t *testing.T) {
+	origExit := osExit
+	exited := false
+	osExit = func(code int) { exited = true }
+	defer func() { osExit = origExit }()
+
+	origKill := terminalKillFunc
+	called := false
+	terminalKillFunc = func(sess *terminalSession) error {
+		called = true
+		return nil
+	}
+	defer func() { terminalKillFunc = origKill }()
+
+	app := &App{}
+	app.ForceQuit()
+
+	if called {
+		t.Error("expected terminalKillFunc not to be called when a.terminals is empty")
+	}
+	if !exited {
+		t.Error("expected ForceQuit to still reach osExit with no terminal sessions")
+	}
 }

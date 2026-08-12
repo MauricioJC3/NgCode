@@ -5,7 +5,16 @@ package main
 import (
 	"syscall"
 	"time"
+
+	"github.com/aymanbagabas/go-pty"
 )
+
+// terminalAfterSpawn is a no-op on Unix: go-pty's Cmd.start() already calls
+// setsid()+setctty() before exec (see killTerminalSession's doc comment
+// below), which alone is sufficient for process-group-based teardown — no
+// extra registration step is needed at spawn time here, unlike Windows'
+// Job Object approach in terminal_windows.go.
+func terminalAfterSpawn(cmd *pty.Cmd) error { return nil }
 
 // terminalKillGracePeriod is how long killTerminalSession waits for the
 // shell's process group to exit after SIGHUP before escalating to
