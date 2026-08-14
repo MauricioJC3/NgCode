@@ -38,6 +38,16 @@ type App struct {
 	terminalMu sync.Mutex
 	terminals  map[string]*terminalSession
 
+	// gitGen is the generation counter for git status refreshes (see
+	// git.go): bumped by every GitStatus call so an in-flight
+	// runGitStatus goroutine can detect it's been superseded by a newer
+	// trigger (folder expand/save/focus can all fire independently and
+	// race) and discard its result instead of emitting a stale
+	// "git:status" event — same generation-guard pattern as searchGen
+	// above.
+	gitMu  sync.Mutex
+	gitGen int64
+
 	updaterMu sync.Mutex
 	version   string
 	updater   *updateState
@@ -534,6 +544,91 @@ func (a *App) LspHover(path string, line int, character int) (string, error) {
 		return "", err
 	}
 	return string(result), nil
+}
+
+// isCurrentGitGen reports whether gen is still the active git-status
+// generation, under a.gitMu — the single point where a.gitGen is read,
+// mirroring isSearchGenCurrent's role for searchGen in search.go.
+func (a *App) isCurrentGitGen(gen int64) bool {
+	a.gitMu.Lock()
+	defer a.gitMu.Unlock()
+	return isGitGenCurrent(a.gitGen, gen)
+}
+
+// runGitStatus does the actual work behind GitStatus: run `git status`
+// rooted at root, parse it, and emit the result via emit — split out (and
+// emit injected rather than calling runtime.EventsEmit directly) so it can
+// be driven directly by tests with a fake/no-op callback, without needing a
+// real Wails runtime context, exactly like search.go's runSearch.
+//
+// A gitStatusOutput error (not a repo, git not on PATH, etc.) is swallowed
+// silently — no event is emitted — per spec's "Non-repository and
+// missing-git silent no-op" requirement; there is no error state to show
+// the user for a background status refresh.
+func (a *App) runGitStatus(gen int64, root string, emit func(event string, payload interface{})) {
+	output, err := gitStatusOutput(root)
+	if err != nil {
+		return
+	}
+	if !a.isCurrentGitGen(gen) {
+		return
+	}
+
+	relStatuses := parseGitPorcelain(output)
+	statuses := make(map[string]string, len(relStatuses))
+	for relPath, xy := range relStatuses {
+		statuses[filepath.Join(root, relPath)] = xy
+	}
+
+	emit("git:status", GitStatusResult{Generation: gen, Root: root, Statuses: statuses})
+}
+
+// GitStatus recomputes git status for root (always the workspace root, per
+// design, never a subfolder) and emits it via the "git:status" event.
+// Event-driven and generation-guarded exactly like SearchInWorkspace,
+// because folder-expand/save/focus can all trigger a refresh independently
+// and race — the frontend's single "git:status" handler re-scans every
+// currently rendered tree row against whichever result arrives last for
+// the current generation.
+func (a *App) GitStatus(root string) error {
+	a.gitMu.Lock()
+	a.gitGen++
+	gen := a.gitGen
+	a.gitMu.Unlock()
+
+	go a.runGitStatus(gen, root, func(event string, payload interface{}) {
+		// a.ctx is nil in tests that call GitStatus directly on a bare
+		// &App{} without going through startup — runtime.EventsEmit would
+		// otherwise call log.Fatalf (os.Exit) on a nil context.
+		if a.ctx == nil {
+			return
+		}
+		runtime.EventsEmit(a.ctx, event, payload)
+	})
+
+	return nil
+}
+
+// GitDiffForFile computes path's working-tree-vs-HEAD diff for gutter
+// markers. Sync request/response with NO generation guard, mirroring
+// LspHover exactly (same theoretical race, same precedent of not guarding
+// it) — the frontend discards a response if path is no longer the active
+// tab by the time it arrives. filepath.Dir(path) is passed as `-C` so git
+// can discover the repository root by walking upward from path, without
+// GitDiffForFile needing workspaceRoot threaded in separately.
+//
+// A gitDiffOutput error (not a repo, no HEAD yet on a brand-new repo, git
+// not on PATH, etc.) is swallowed into an empty result with a nil error,
+// same "no client -> empty, no error" convention as LspHover.
+func (a *App) GitDiffForFile(path string) (GitDiffResult, error) {
+	empty := GitDiffResult{Path: path, Added: []int{}, Modified: []int{}, Removed: []int{}}
+
+	output, err := gitDiffOutput(filepath.Dir(path), path)
+	if err != nil {
+		return empty, nil
+	}
+
+	return parseUnifiedDiff(path, output), nil
 }
 
 // UpdateAccept runs the full accept flow for the pending update stored in

@@ -30,6 +30,24 @@ export namespace main {
 	        this.Content = source["Content"];
 	    }
 	}
+	export class GitDiffResult {
+	    path: string;
+	    added: number[];
+	    modified: number[];
+	    removed: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GitDiffResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.added = source["added"];
+	        this.modified = source["modified"];
+	        this.removed = source["removed"];
+	    }
+	}
 
 }
 
