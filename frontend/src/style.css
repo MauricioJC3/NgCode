@@ -286,6 +286,30 @@ html, body {
 .modal-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--bg-void); font-weight: 600; }
 .modal-btn-primary:hover { background: var(--accent-dim); border-color: var(--accent-dim); color: var(--bg-void); }
 
+/* ---- command palette ---- */
+.palette-overlay { align-items: flex-start; padding-top: 15vh; z-index: 70; }
+.palette-box {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 8px; width: 560px; max-width: 90vw;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .35);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.palette-input {
+  width: 100%; padding: 12px 16px; font-size: 14px;
+  border: none; border-bottom: 1px solid var(--border);
+  background: var(--bg-void); color: var(--text-primary);
+}
+.palette-input:focus { outline: none; }
+.palette-list { max-height: 320px; overflow-y: auto; padding: 4px; }
+.palette-item {
+  padding: 8px 12px; font-size: 13px; color: var(--text-primary);
+  border-radius: 4px; cursor: pointer;
+}
+.palette-item:hover { background: var(--bg-hover); }
+.palette-item.is-selected {
+  background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent);
+}
+
 /* ---- folder context menu ---- */
 .context-menu {
   position: fixed; z-index: 60; min-width: 160px;
