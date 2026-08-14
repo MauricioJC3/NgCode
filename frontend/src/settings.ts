@@ -46,7 +46,7 @@ export interface KeybindingEntry {
  */
 export const KEYBINDINGS: KeybindingEntry[] = [
   { id: 'save-file', label: 'Guardar archivo', keys: ['Mod', 'S'] },
-  { id: 'toggle-terminal', label: 'Mostrar/ocultar terminal', keys: ['Mod', '`'] },
+  { id: 'toggle-terminal', label: 'Mostrar/ocultar terminal', keys: ['Mod', 'T'] },
   { id: 'command-palette', label: 'Paleta de comandos', keys: ['Mod', 'Shift', 'P'] },
   { id: 'open-settings', label: 'Configuración', keys: ['Mod', ','] },
   { id: 'rename-entry', label: 'Renombrar (árbol de archivos)', keys: ['F2'] },

@@ -22,20 +22,24 @@ describe('clampPanelHeight', () => {
 });
 
 describe('isTerminalToggleShortcut', () => {
-  it('returns true for Ctrl+`', () => {
-    expect(isTerminalToggleShortcut({ ctrlKey: true, metaKey: false, key: '`' })).toBe(true);
+  it('returns true for Ctrl+T', () => {
+    expect(isTerminalToggleShortcut({ ctrlKey: true, metaKey: false, key: 't' })).toBe(true);
   });
 
-  it('returns true for Cmd+` (macOS metaKey)', () => {
-    expect(isTerminalToggleShortcut({ ctrlKey: false, metaKey: true, key: '`' })).toBe(true);
+  it('returns true for Cmd+T (macOS metaKey)', () => {
+    expect(isTerminalToggleShortcut({ ctrlKey: false, metaKey: true, key: 't' })).toBe(true);
   });
 
-  it('returns true for Ctrl+Cmd+` (both modifiers held)', () => {
-    expect(isTerminalToggleShortcut({ ctrlKey: true, metaKey: true, key: '`' })).toBe(true);
+  it('returns true for Ctrl+Cmd+T (both modifiers held)', () => {
+    expect(isTerminalToggleShortcut({ ctrlKey: true, metaKey: true, key: 't' })).toBe(true);
   });
 
-  it('returns false for a plain ` with no ctrl/meta modifier', () => {
-    expect(isTerminalToggleShortcut({ ctrlKey: false, metaKey: false, key: '`' })).toBe(false);
+  it('returns true for Ctrl+T with an uppercase key value (Shift/CapsLock)', () => {
+    expect(isTerminalToggleShortcut({ ctrlKey: true, metaKey: false, key: 'T' })).toBe(true);
+  });
+
+  it('returns false for a plain t with no ctrl/meta modifier', () => {
+    expect(isTerminalToggleShortcut({ ctrlKey: false, metaKey: false, key: 't' })).toBe(false);
   });
 
   it('returns false for Ctrl+<other key>', () => {

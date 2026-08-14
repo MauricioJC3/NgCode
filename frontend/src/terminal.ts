@@ -30,7 +30,7 @@ export interface TerminalToggleKeyEvent {
  * chance to swallow it.
  */
 export function isTerminalToggleShortcut(e: TerminalToggleKeyEvent): boolean {
-  return (e.ctrlKey || e.metaKey) && e.key === '`';
+  return (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 't';
 }
 
 /**
