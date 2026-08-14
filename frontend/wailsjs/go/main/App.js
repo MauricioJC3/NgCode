@@ -18,6 +18,14 @@ export function ForceQuit() {
   return window['go']['main']['App']['ForceQuit']();
 }
 
+export function GitDiffForFile(arg1) {
+  return window['go']['main']['App']['GitDiffForFile'](arg1);
+}
+
+export function GitStatus(arg1) {
+  return window['go']['main']['App']['GitStatus'](arg1);
+}
+
 export function KillTerminal(arg1) {
   return window['go']['main']['App']['KillTerminal'](arg1);
 }
