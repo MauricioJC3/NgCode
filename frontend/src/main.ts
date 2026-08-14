@@ -1607,7 +1607,12 @@ function hideContextMenu() {
 
 treeEl.addEventListener('contextmenu', (e) => {
   const row = (e.target as HTMLElement).closest<HTMLDivElement>('.tree-row');
-  if (!row) return;
+  if (!row) {
+    if (!workspaceRoot) return;
+    e.preventDefault();
+    showContextMenu(e.clientX, e.clientY, workspaceRoot, 'root');
+    return;
+  }
   e.preventDefault();
   const kind: ContextMenuKind = row.dataset.kind === 'folder' ? 'folder' : 'file';
   showContextMenu(e.clientX, e.clientY, row.dataset.path!, kind);
