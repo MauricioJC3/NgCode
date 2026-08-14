@@ -134,7 +134,11 @@ html, body {
   border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer;
 }
 .tree-action-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-.tree { font-size: 13px; }
+/* flex: 1 makes the (otherwise shrink-to-fit) row list fill the rest of the
+   panel's height, so right-clicking below the last row still lands inside
+   #tree and hits the root-context-menu fallback instead of bubbling past it
+   into .sidebar, which has no contextmenu listener of its own. */
+.tree { font-size: 13px; flex: 1; min-height: 0; }
 .tree-row {
   display: flex; align-items: center; gap: 6px;
   padding: 3px 10px 3px calc(10px + (var(--d, 0) * 16px));
@@ -163,7 +167,7 @@ html, body {
   padding: 0 4px; outline: none;
 }
 
-.sidebar-panel { display: flex; flex-direction: column; min-height: 0; }
+.sidebar-panel { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .sidebar-panel[hidden] { display: none; }
 
 /* ---- search panel ---- */
