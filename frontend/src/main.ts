@@ -132,6 +132,13 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         <div class="search-results" id="search-results"></div>
         <div class="search-truncated" id="search-truncated" hidden>Se alcanzó el límite de resultados; se muestran solo las primeras coincidencias.</div>
       </div>
+      <div class="sidebar-panel" id="panel-git" hidden>
+        <div class="side-title">Control de versiones</div>
+        <div class="git-changes" id="git-changes"></div>
+        <div class="sidebar-empty" id="git-empty">
+          <p>No hay cambios</p>
+        </div>
+      </div>
     </aside>
 
     <div class="context-menu" id="context-menu" hidden>
@@ -902,6 +909,7 @@ window.addEventListener('focus', refreshGitStatus);
 EventsOn('git:status', (payload: { generation: number; root: string; statuses: Record<string, string> }) => {
   gitStatusByPath = payload.statuses ?? {};
   refreshGitBadges();
+  renderGitPanel();
 });
 
 // ---- drag-and-drop move ----
@@ -1111,24 +1119,89 @@ let searchTruncatedFiles = new Set<string>();
 
 const panelExplorerEl = document.getElementById('panel-explorer')!;
 const panelSearchEl = document.getElementById('panel-search')!;
+const panelGitEl = document.getElementById('panel-git')!;
 const explorerActBtn = document.querySelector<HTMLButtonElement>('.act-btn[aria-label="Explorador"]')!;
 const searchActBtn = document.querySelector<HTMLButtonElement>('.act-btn[aria-label="Buscar"]')!;
+const gitActBtn = document.querySelector<HTMLButtonElement>('.act-btn[aria-label="Control de versiones"]')!;
 const searchQueryEl = document.getElementById('search-query') as HTMLInputElement;
 const searchCaseBtn = document.getElementById('search-case-btn') as HTMLButtonElement;
 const searchResultsEl = document.getElementById('search-results')!;
 const searchMessageEl = document.getElementById('search-message')!;
 const searchTruncatedEl = document.getElementById('search-truncated')!;
+const gitChangesEl = document.getElementById('git-changes')!;
+const gitEmptyEl = document.getElementById('git-empty')!;
 
-function showSidebarPanel(panel: 'explorer' | 'search') {
+function showSidebarPanel(panel: 'explorer' | 'search' | 'git') {
   panelExplorerEl.hidden = panel !== 'explorer';
   panelSearchEl.hidden = panel !== 'search';
+  panelGitEl.hidden = panel !== 'git';
   explorerActBtn.classList.toggle('is-active', panel === 'explorer');
   searchActBtn.classList.toggle('is-active', panel === 'search');
+  gitActBtn.classList.toggle('is-active', panel === 'git');
   if (panel === 'search') searchQueryEl.focus();
 }
 
 explorerActBtn.addEventListener('click', () => showSidebarPanel('explorer'));
 searchActBtn.addEventListener('click', () => showSidebarPanel('search'));
+gitActBtn.addEventListener('click', () => showSidebarPanel('git'));
+
+// GIT_BADGE_LETTER maps gitBadgeClass's status categories to the
+// single-letter badge shown in the source-control panel row (M/A/U/D),
+// mirroring the letter convention most editors use for the same four
+// git-status categories this app already classifies via gitBadgeClass.
+const GIT_BADGE_LETTER: Record<'modified' | 'added' | 'untracked' | 'deleted', string> = {
+  modified: 'M',
+  added: 'A',
+  untracked: 'U',
+  deleted: 'D',
+};
+
+// renderGitPanel rebuilds the "Control de versiones" panel's file list from
+// gitStatusByPath — the same live snapshot the tree-row badges already read
+// (see applyGitBadge above). Called once from the "git:status" handler
+// alongside refreshGitBadges() so both views update from the single source
+// of truth; no separate fetch/poll is introduced.
+function renderGitPanel() {
+  const changed = Object.keys(gitStatusByPath)
+    .map((path) => ({ path, cls: gitBadgeClass(gitStatusByPath[path]) }))
+    .filter((entry): entry is { path: string; cls: 'modified' | 'added' | 'untracked' | 'deleted' } => entry.cls !== null)
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+  gitEmptyEl.hidden = changed.length !== 0;
+
+  const frag = document.createDocumentFragment();
+  for (const { path, cls } of changed) {
+    const row = document.createElement('div');
+    row.className = 'git-change-row';
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+
+    const badge = document.createElement('span');
+    badge.className = `git-change-badge git-${cls}`;
+    badge.textContent = GIT_BADGE_LETTER[cls];
+    badge.setAttribute('aria-hidden', 'true');
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'git-change-name';
+    nameEl.textContent = fileName(path);
+
+    const pathEl = document.createElement('span');
+    pathEl.className = 'git-change-path';
+    pathEl.textContent = dirOf(path);
+
+    row.append(badge, nameEl, pathEl);
+
+    const open = () => { void openFileFromTree(path); };
+    row.addEventListener('click', open);
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+
+    frag.appendChild(row);
+  }
+  gitChangesEl.innerHTML = '';
+  gitChangesEl.appendChild(frag);
+}
 
 function setSearchMessage(text: string | null) {
   searchMessageEl.textContent = text ?? '';

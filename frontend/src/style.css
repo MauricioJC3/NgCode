@@ -24,6 +24,10 @@ html, body {
   --tk-num: #d6a339;
   --tk-cm: #57646d;
   --tk-fn: #6fc7e0;
+  --git-modified: #d6a339;
+  --git-added: #9fcb6b;
+  --git-untracked: #3fc7cc;
+  --git-deleted: #e06c75;
 }
 #app-shell[data-ide-theme="light"] {
   --bg-void: #fbfbf8;
@@ -43,6 +47,10 @@ html, body {
   --tk-num: #9c6a15;
   --tk-cm: #8b96a0;
   --tk-fn: #1e7a93;
+  --git-modified: #9c6a15;
+  --git-added: #4c7a2e;
+  --git-untracked: #0e8a8f;
+  --git-deleted: #b83b3b;
 }
 
 #app-shell {
@@ -223,6 +231,41 @@ html, body {
   border-top: 1px solid var(--border); background: var(--bg-elevated);
 }
 .search-truncated[hidden] { display: none; }
+
+/* ---- git status colors ----
+   Shared by the source-control panel's badge letters below and by the
+   file-tree's git-status classes (tree rows already get .git-modified /
+   .git-added / .git-untracked / .git-deleted added via applyGitBadge in
+   main.ts, but had no color rule of their own until this change). */
+.tree-row.git-modified { color: var(--git-modified); }
+.tree-row.git-added { color: var(--git-added); }
+.tree-row.git-untracked { color: var(--git-untracked); }
+.tree-row.git-deleted { color: var(--git-deleted); }
+
+/* ---- source control panel ---- */
+.git-changes { flex: 1; overflow-y: auto; font-size: 12.5px; }
+.git-change-row {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 4px 12px; color: var(--text-secondary);
+}
+.git-change-row:hover { background: var(--bg-hover); color: var(--text-primary); }
+.git-change-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.git-change-badge {
+  flex-shrink: 0; width: 16px; text-align: center;
+  font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.git-change-badge.git-modified { color: var(--git-modified); }
+.git-change-badge.git-added { color: var(--git-added); }
+.git-change-badge.git-untracked { color: var(--git-untracked); }
+.git-change-badge.git-deleted { color: var(--git-deleted); }
+.git-change-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-primary);
+}
+.git-change-path {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-align: right; font-size: 11.5px; color: var(--text-tertiary);
+}
 
 .sidebar-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
