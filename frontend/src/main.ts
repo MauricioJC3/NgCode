@@ -46,6 +46,9 @@ import { clampPanelHeight, isTerminalToggleShortcut } from './terminal';
 import {
   isCommandPaletteShortcut, filterCommands, moveSelection, type PaletteCommand,
 } from './command-palette';
+import {
+  isSettingsShortcut, formatShortcut, detectIsMac, KEYBINDINGS,
+} from './settings';
 import { gitBadgeClass, gitDiffMarkers, folderGitBadgeClass, type GitDiffResult, type GitGutterMark } from './git';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -186,6 +189,28 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <div class="palette-box" role="dialog" aria-modal="true" aria-label="Paleta de comandos">
         <input class="palette-input" id="palette-input" type="text" placeholder="Escribí un comando..." autocomplete="off" />
         <div class="palette-list" id="palette-list" role="listbox"></div>
+      </div>
+    </div>
+
+    <div class="modal-overlay settings-overlay" id="settings-overlay" hidden>
+      <div class="settings-box" role="dialog" aria-modal="true" aria-label="Configuración">
+        <div class="settings-header">
+          <span class="settings-title">Configuración</span>
+          <button class="settings-close-btn" id="settings-close-btn" type="button" aria-label="Cerrar configuración">${ICON_CLOSE}</button>
+        </div>
+        <div class="settings-body">
+          <section class="settings-section">
+            <h3 class="settings-section-title">Ajustes</h3>
+            <div class="settings-row">
+              <span class="settings-row-label">Tema del editor</span>
+              <button class="settings-theme-btn" id="settings-theme-btn" type="button"></button>
+            </div>
+          </section>
+          <section class="settings-section">
+            <h3 class="settings-section-title">Atajos de teclado</h3>
+            <div class="settings-keybindings" id="settings-keybindings"></div>
+          </section>
+        </div>
       </div>
     </div>
   </div>
@@ -1785,6 +1810,94 @@ function toggleTheme() {
 }
 document.getElementById('theme-toggle')!.addEventListener('click', toggleTheme);
 
+// ---- settings & keybindings panel ----
+//
+// A read-only reference panel: the Settings section wires the app's real
+// configurable state — today that is only the theme toggle above (see the
+// feature's scope boundaries: no new persistence, no rebinding UI). The
+// Keybindings section is a static, non-editable list rendered from
+// settings.ts's KEYBINDINGS, one row per shortcut actually wired elsewhere
+// in this file — adding a shortcut without updating KEYBINDINGS makes this
+// list drift, same caveat as any hand-maintained reference.
+
+const settingsOverlayEl = document.getElementById('settings-overlay')!;
+const settingsCloseBtn = document.getElementById('settings-close-btn') as HTMLButtonElement;
+const settingsThemeBtn = document.getElementById('settings-theme-btn') as HTMLButtonElement;
+const settingsKeybindingsEl = document.getElementById('settings-keybindings')!;
+let settingsReturnFocusEl: HTMLElement | null = null;
+
+// Resolved once at startup rather than per-render — the platform a session
+// is running on doesn't change mid-session.
+const isMacPlatform = detectIsMac(navigator.userAgent);
+
+function isSettingsPanelOpen(): boolean {
+  return !settingsOverlayEl.hidden;
+}
+
+function renderSettingsTheme() {
+  const dark = shellEl.getAttribute('data-ide-theme') === 'dark';
+  settingsThemeBtn.textContent = dark ? 'Oscuro' : 'Claro';
+}
+
+function renderSettingsKeybindings() {
+  settingsKeybindingsEl.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  KEYBINDINGS.forEach((entry) => {
+    const row = document.createElement('div');
+    row.className = 'settings-row';
+
+    const label = document.createElement('span');
+    label.className = 'settings-row-label';
+    label.textContent = entry.label;
+
+    const kbd = document.createElement('kbd');
+    kbd.className = 'settings-kbd';
+    kbd.textContent = formatShortcut(entry.keys, isMacPlatform);
+
+    row.appendChild(label);
+    row.appendChild(kbd);
+    frag.appendChild(row);
+  });
+  settingsKeybindingsEl.appendChild(frag);
+}
+
+function openSettingsPanel() {
+  settingsReturnFocusEl = document.activeElement as HTMLElement | null;
+  renderSettingsTheme();
+  renderSettingsKeybindings();
+  settingsOverlayEl.hidden = false;
+  settingsCloseBtn.focus();
+}
+
+function closeSettingsPanel() {
+  settingsOverlayEl.hidden = true;
+  settingsReturnFocusEl?.focus();
+  settingsReturnFocusEl = null;
+}
+
+settingsThemeBtn.addEventListener('click', () => {
+  toggleTheme();
+  renderSettingsTheme();
+});
+settingsCloseBtn.addEventListener('click', closeSettingsPanel);
+settingsOverlayEl.addEventListener('click', (e) => {
+  if (e.target === settingsOverlayEl) closeSettingsPanel();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && isSettingsPanelOpen()) closeSettingsPanel();
+});
+
+// Capture-phase (mirrors the terminal toggle / command palette's window
+// listeners elsewhere in this file) so the shortcut opens Settings
+// regardless of what currently has focus, including the terminal or editor.
+window.addEventListener('keydown', (e) => {
+  if (isSettingsShortcut(e)) {
+    e.preventDefault();
+    if (isSettingsPanelOpen()) closeSettingsPanel();
+    else openSettingsPanel();
+  }
+}, true);
+
 // ---- command palette ----
 //
 // VS Code-style Ctrl+Shift+P / Cmd+Shift+P command palette. Each entry below
@@ -1813,6 +1926,7 @@ const paletteCommands: AppPaletteCommand[] = [
   { id: 'find-in-files', label: 'Buscar en archivos', run: () => showSidebarPanel('search') },
   { id: 'show-explorer', label: 'Mostrar explorador', run: () => showSidebarPanel('explorer') },
   { id: 'toggle-theme', label: 'Cambiar tema del editor', run: () => toggleTheme() },
+  { id: 'open-settings', label: 'Configuración', run: () => openSettingsPanel() },
 ];
 
 const paletteOverlayEl = document.getElementById('palette-overlay')!;
