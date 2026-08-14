@@ -11,6 +11,8 @@ import { go } from '@codemirror/lang-go';
 import { json } from '@codemirror/lang-json';
 import { css } from '@codemirror/lang-css';
 import { markdown } from '@codemirror/lang-markdown';
+import { python } from '@codemirror/lang-python';
+import { html } from '@codemirror/lang-html';
 import { autocompletion, type CompletionContext, type CompletionResult, type Completion } from '@codemirror/autocomplete';
 import { linter, forceLinting } from '@codemirror/lint';
 import { search, searchKeymap } from '@codemirror/search';
@@ -206,13 +208,15 @@ function langExtension(path: string) {
     case 'json': return [json()];
     case 'css': return [css()];
     case 'md': return [markdown()];
+    case 'py': return [python()];
+    case 'html': case 'htm': return [html()];
     default: return [];
   }
 }
 
 const LANGUAGE_LABELS: Record<string, string> = {
   go: 'Go', ts: 'TypeScript', tsx: 'TypeScript', js: 'JavaScript', jsx: 'JavaScript',
-  json: 'JSON', css: 'CSS', md: 'Markdown',
+  json: 'JSON', css: 'CSS', md: 'Markdown', py: 'Python', html: 'HTML', htm: 'HTML',
 };
 
 function languageLabel(path: string): string {
@@ -222,6 +226,7 @@ function languageLabel(path: string): string {
 const DOT_COLORS: Record<string, string> = {
   go: 'var(--tk-type)', ts: '#4a8fd6', tsx: '#4a8fd6', js: '#e0c341', jsx: '#e0c341',
   json: 'var(--tk-num)', css: 'var(--tk-fn)', md: 'var(--tk-str)',
+  py: 'var(--tk-kw)', html: 'var(--tk-fn)', htm: 'var(--tk-fn)',
 };
 
 function dotColor(path: string): string {
@@ -266,6 +271,8 @@ const LSP_LANGUAGES: Record<string, string> = {
   ts: 'typescript', tsx: 'typescript', js: 'typescript', jsx: 'typescript', mjs: 'typescript', cjs: 'typescript',
   json: 'json',
   css: 'css',
+  py: 'python',
+  html: 'html', htm: 'html',
 };
 
 function lspLanguageFor(path: string): string | null {
