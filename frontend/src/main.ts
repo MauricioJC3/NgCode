@@ -43,6 +43,9 @@ import {
 } from './lsp';
 import { remapPath } from './move';
 import { clampPanelHeight, isTerminalToggleShortcut } from './terminal';
+import {
+  isCommandPaletteShortcut, filterCommands, moveSelection, type PaletteCommand,
+} from './command-palette';
 import { gitBadgeClass, gitDiffMarkers, folderGitBadgeClass, type GitDiffResult, type GitGutterMark } from './git';
 
 const ICON_CHEVRON = '<svg class="chev icon-sm" viewBox="0 0 12 12" fill="none"><path d="M4 2.5 8 6l-4 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -176,6 +179,13 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
           <button class="modal-btn" id="confirm-cancel" type="button">Cancelar</button>
           <button class="modal-btn modal-btn-primary" id="confirm-ok" type="button">Cerrar sin guardar</button>
         </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay palette-overlay" id="palette-overlay" hidden>
+      <div class="palette-box" role="dialog" aria-modal="true" aria-label="Paleta de comandos">
+        <input class="palette-input" id="palette-input" type="text" placeholder="Escribí un comando..." autocomplete="off" />
+        <div class="palette-list" id="palette-list" role="listbox"></div>
       </div>
     </div>
   </div>
@@ -1769,9 +1779,129 @@ window.addEventListener('mouseup', () => {
 // ---- theme toggle ----
 
 const shellEl = document.getElementById('app-shell')!;
-document.getElementById('theme-toggle')!.addEventListener('click', () => {
+function toggleTheme() {
   const next = shellEl.getAttribute('data-ide-theme') === 'dark' ? 'light' : 'dark';
   shellEl.setAttribute('data-ide-theme', next);
+}
+document.getElementById('theme-toggle')!.addEventListener('click', toggleTheme);
+
+// ---- command palette ----
+//
+// VS Code-style Ctrl+Shift+P / Cmd+Shift+P command palette. Each entry below
+// wraps an action that already exists elsewhere in this file (same guard
+// conditions as that action's own button/shortcut) — the palette is just
+// another way to reach them, not a new set of behaviors.
+
+interface AppPaletteCommand extends PaletteCommand {
+  run: () => void;
+}
+
+const paletteCommands: AppPaletteCommand[] = [
+  { id: 'open-folder', label: 'Abrir carpeta', run: () => void openWorkspace() },
+  { id: 'new-file', label: 'Nuevo archivo', run: () => { if (workspaceRoot) void createFileIn(workspaceRoot); } },
+  { id: 'new-folder', label: 'Nueva carpeta', run: () => { if (workspaceRoot) void createFolderIn(workspaceRoot); } },
+  { id: 'save-file', label: 'Guardar archivo', run: () => saveActiveTab() },
+  { id: 'close-tab', label: 'Cerrar pestaña activa', run: () => { if (activePath) void requestCloseTab(activePath); } },
+  { id: 'toggle-terminal', label: 'Mostrar/ocultar terminal', run: () => void toggleTerminalPanel() },
+  {
+    id: 'goto-definition',
+    label: 'Ir a definición',
+    run: () => {
+      if (activePath && lspActiveFor(activePath)) void goToDefinitionAt(editor, editor.state.selection.main.head);
+    },
+  },
+  { id: 'find-in-files', label: 'Buscar en archivos', run: () => showSidebarPanel('search') },
+  { id: 'show-explorer', label: 'Mostrar explorador', run: () => showSidebarPanel('explorer') },
+  { id: 'toggle-theme', label: 'Cambiar tema del editor', run: () => toggleTheme() },
+];
+
+const paletteOverlayEl = document.getElementById('palette-overlay')!;
+const paletteInputEl = document.getElementById('palette-input') as HTMLInputElement;
+const paletteListEl = document.getElementById('palette-list')!;
+
+let paletteFiltered: AppPaletteCommand[] = [];
+let paletteSelectedIndex = -1;
+let paletteReturnFocusEl: HTMLElement | null = null;
+
+function isCommandPaletteOpen(): boolean {
+  return !paletteOverlayEl.hidden;
+}
+
+function renderPaletteList() {
+  paletteListEl.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  paletteFiltered.forEach((cmd, i) => {
+    const row = document.createElement('div');
+    row.className = 'palette-item' + (i === paletteSelectedIndex ? ' is-selected' : '');
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(i === paletteSelectedIndex));
+    row.textContent = cmd.label;
+    row.addEventListener('click', () => executeCommand(cmd));
+    frag.appendChild(row);
+  });
+  paletteListEl.appendChild(frag);
+}
+
+function refilterPalette() {
+  paletteFiltered = filterCommands(paletteCommands, paletteInputEl.value.trim());
+  paletteSelectedIndex = paletteFiltered.length > 0 ? 0 : -1;
+  renderPaletteList();
+}
+
+function openCommandPalette() {
+  paletteReturnFocusEl = document.activeElement as HTMLElement | null;
+  paletteOverlayEl.hidden = false;
+  paletteInputEl.value = '';
+  refilterPalette();
+  paletteInputEl.focus();
+}
+
+function closeCommandPalette() {
+  paletteOverlayEl.hidden = true;
+  paletteReturnFocusEl?.focus();
+  paletteReturnFocusEl = null;
+}
+
+function executeCommand(cmd: AppPaletteCommand) {
+  closeCommandPalette();
+  cmd.run();
+}
+
+paletteInputEl.addEventListener('input', refilterPalette);
+
+paletteInputEl.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    paletteSelectedIndex = moveSelection(paletteSelectedIndex, 1, paletteFiltered.length);
+    renderPaletteList();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    paletteSelectedIndex = moveSelection(paletteSelectedIndex, -1, paletteFiltered.length);
+    renderPaletteList();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const cmd = paletteFiltered[paletteSelectedIndex];
+    if (cmd) executeCommand(cmd);
+  }
 });
+
+paletteOverlayEl.addEventListener('click', (e) => {
+  if (e.target === paletteOverlayEl) closeCommandPalette();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && isCommandPaletteOpen()) closeCommandPalette();
+});
+
+// Capture-phase (mirrors the terminal toggle's window listener above) so the
+// shortcut opens the palette regardless of what currently has focus —
+// including the terminal (xterm.js) or the editor.
+window.addEventListener('keydown', (e) => {
+  if (isCommandPaletteShortcut(e)) {
+    e.preventDefault();
+    if (isCommandPaletteOpen()) closeCommandPalette();
+    else openCommandPalette();
+  }
+}, true);
 
 showEmptyState();
