@@ -84,6 +84,18 @@ var lspServers = map[string]lspServerSpec{
 		languageID:  "css",
 		installHint: "npm install -g vscode-langservers-extracted",
 	},
+	"python": {
+		command:     "pyright-langserver",
+		args:        []string{"--stdio"},
+		languageID:  "python",
+		installHint: "npm install -g pyright",
+	},
+	"html": {
+		command:     "vscode-html-language-server",
+		args:        []string{"--stdio"},
+		languageID:  "html",
+		installHint: "npm install -g vscode-langservers-extracted",
+	},
 }
 
 // languageForPath maps a file's extension to the lspServers key backing it,
@@ -101,6 +113,10 @@ func languageForPath(path string) string {
 		return "json"
 	case ".css":
 		return "css"
+	case ".py":
+		return "python"
+	case ".html", ".htm":
+		return "html"
 	default:
 		return ""
 	}
