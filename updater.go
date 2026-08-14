@@ -68,6 +68,20 @@ type UpdateInfo struct {
 	CurrentVersion string `json:"currentVersion"`
 }
 
+// UpdateCheckResult is the return shape of App.CheckForUpdateNow (app.go) —
+// the manual, Settings-panel-triggered check. It mirrors UpdateInfo's two
+// fields plus Available, so the frontend can tell "checked, nothing new"
+// apart from "checked, found something" without inferring it from zero
+// values. When Available is true, "update:available" has already been
+// emitted with the same Version/CurrentVersion, so the frontend's existing
+// listener drives the modal — the caller only needs Available to stop
+// showing its own loading state.
+type UpdateCheckResult struct {
+	Available      bool   `json:"available"`
+	Version        string `json:"version"`
+	CurrentVersion string `json:"currentVersion"`
+}
+
 // ---- semver ----
 
 // parseSemver parses a version string of the form "vMAJOR.MINOR.PATCH" or
@@ -311,8 +325,15 @@ func fetchLatestRelease(ctx context.Context) (*githubRelease, error) {
 	return &release, nil
 }
 
-// checkForUpdatesBackground checks, at most once per updateCheckInterval,
-// whether a newer release than currentVersion is published on GitHub.
+// checkForUpdatesBackground checks whether a newer release than
+// currentVersion is published on GitHub. When force is false, the check is
+// throttled to at most once per updateCheckInterval via shouldCheckForUpdates
+// (a cache-window hit returns (nil, nil) with no network call). When force
+// is true, the cache-window gate is skipped entirely and the GitHub API is
+// always hit — used by the app's startup check (every launch checks for
+// real, per product decision) and by the manual "check for updates now"
+// bound method (App.CheckForUpdateNow, app.go), both of which want an
+// unthrottled, on-demand check rather than the cached/throttled behavior.
 //
 // Contract: a non-nil error means the check itself failed (offline,
 // rate-limited, malformed response, or a local cache I/O problem) — the
@@ -324,14 +345,14 @@ func fetchLatestRelease(ctx context.Context) (*githubRelease, error) {
 // A nil error with a nil *updateState means the check succeeded but there
 // is nothing new to offer (already latest, cache window not elapsed yet,
 // or the release has no matching asset for this platform).
-func checkForUpdatesBackground(ctx context.Context, currentVersion string) (*updateState, error) {
+func checkForUpdatesBackground(ctx context.Context, currentVersion string, force bool) (*updateState, error) {
 	cache, err := loadUpdateCache()
 	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now()
-	if !shouldCheckForUpdates(cache, now) {
+	if !force && !shouldCheckForUpdates(cache, now) {
 		return nil, nil
 	}
 

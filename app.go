@@ -85,7 +85,11 @@ func (a *App) startup(ctx context.Context) {
 		runtime.LogError(ctx, "cleanupOldBinary: "+err.Error())
 	}
 
-	go a.checkForUpdates(ctx)
+	// force=true: per product decision, the startup check is NOT throttled
+	// by the 24h cache — every app launch actually hits GitHub, it never
+	// silently short-circuits on a recent LastCheck. See
+	// checkForUpdatesBackground's force parameter (updater.go).
+	go a.checkForUpdates(ctx, true)
 }
 
 // checkForUpdates runs the background update check (updater.go) and, if a
@@ -93,9 +97,10 @@ func (a *App) startup(ctx context.Context) {
 // frontend via the "update:available" event. A check error is logged only —
 // per spec, a failed check aborts silently to the user and simply retries
 // on the next launch (checkForUpdatesBackground already withholds the cache
-// timestamp update in that case).
-func (a *App) checkForUpdates(ctx context.Context) {
-	state, err := checkForUpdatesBackground(ctx, a.version)
+// timestamp update in that case). force is forwarded verbatim to
+// checkForUpdatesBackground — see its doc comment for what force does.
+func (a *App) checkForUpdates(ctx context.Context, force bool) {
+	state, err := checkForUpdatesBackground(ctx, a.version, force)
 	if err != nil {
 		runtime.LogError(ctx, "checkForUpdatesBackground: "+err.Error())
 		return
@@ -104,6 +109,16 @@ func (a *App) checkForUpdates(ctx context.Context) {
 		return
 	}
 
+	a.storeAndNotifyUpdate(ctx, state)
+}
+
+// storeAndNotifyUpdate records state as the pending update (consumed by
+// UpdateAccept/UpdateDismiss) and emits "update:available" so the frontend's
+// existing modal listener fires. Shared by checkForUpdates (startup path)
+// and CheckForUpdateNow (manual Settings-panel path) so there is exactly one
+// place that turns a found update into user-visible state — no second UI
+// path for "found via button".
+func (a *App) storeAndNotifyUpdate(ctx context.Context, state *updateState) {
 	a.updaterMu.Lock()
 	a.updater = state
 	a.updaterMu.Unlock()
@@ -111,6 +126,31 @@ func (a *App) checkForUpdates(ctx context.Context) {
 		Version:        state.Version,
 		CurrentVersion: a.version,
 	})
+}
+
+// CheckForUpdateNow runs an immediate, unthrottled update check triggered by
+// the user (Settings panel's "Buscar actualizaciones" button), independent
+// of the startup check's timing. It always hits the GitHub API
+// (checkForUpdatesBackground with force=true) regardless of the 24h cache.
+//
+// On finding a newer release, it stores it on a.updater and emits
+// "update:available" via storeAndNotifyUpdate — the same event and modal
+// flow the startup check drives — and returns Available: true so the caller
+// can stop showing its loading state. On no update found, it returns
+// Available: false with no event emitted (nothing to react to). A non-nil
+// error means the check itself failed (network/API), surfaced the same way
+// every other bound method's error is surfaced (see OpenFolder, GitStatus).
+func (a *App) CheckForUpdateNow() (UpdateCheckResult, error) {
+	state, err := checkForUpdatesBackground(a.ctx, a.version, true)
+	if err != nil {
+		return UpdateCheckResult{}, err
+	}
+	if state == nil {
+		return UpdateCheckResult{Available: false, CurrentVersion: a.version}, nil
+	}
+
+	a.storeAndNotifyUpdate(a.ctx, state)
+	return UpdateCheckResult{Available: true, Version: state.Version, CurrentVersion: a.version}, nil
 }
 
 // beforeClose always vetoes the native window close (returns true) and asks

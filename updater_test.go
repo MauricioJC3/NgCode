@@ -260,7 +260,7 @@ func TestCheckForUpdatesBackground(t *testing.T) {
 		defer swapPlatform("windows", "amd64")()
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-		state, err := checkForUpdatesBackground(context.Background(), "v1.0.0")
+		state, err := checkForUpdatesBackground(context.Background(), "v1.0.0", false)
 		if err != nil {
 			t.Fatalf("checkForUpdatesBackground(): unexpected error: %v", err)
 		}
@@ -294,7 +294,7 @@ func TestCheckForUpdatesBackground(t *testing.T) {
 		defer swapGithubReleasesURL(srv.URL)()
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-		state, err := checkForUpdatesBackground(context.Background(), "v1.0.0")
+		state, err := checkForUpdatesBackground(context.Background(), "v1.0.0", false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -317,7 +317,7 @@ func TestCheckForUpdatesBackground(t *testing.T) {
 			t.Fatalf("saveUpdateCache: %v", err)
 		}
 
-		state, err := checkForUpdatesBackground(context.Background(), "v1.0.0")
+		state, err := checkForUpdatesBackground(context.Background(), "v1.0.0", false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -329,6 +329,37 @@ func TestCheckForUpdatesBackground(t *testing.T) {
 		}
 	})
 
+	t.Run("force=true bypasses the 24h cache window and still hits the network", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			// No newer version than currentVersion: this isolates the
+			// assertion to "did the network call happen at all", not
+			// "was an update found".
+			_, _ = w.Write([]byte(`{"tag_name": "v1.0.0", "assets": []}`))
+		}))
+		defer srv.Close()
+		defer swapGithubReleasesURL(srv.URL)()
+
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		// LastCheck "just now" would short-circuit a non-forced call (see
+		// the sibling test above) — force=true must bypass that gate.
+		if err := saveUpdateCache(updateCache{LastCheck: time.Now()}); err != nil {
+			t.Fatalf("saveUpdateCache: %v", err)
+		}
+
+		state, err := checkForUpdatesBackground(context.Background(), "v1.0.0", true)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if state != nil {
+			t.Fatalf("want nil state (already latest), got %+v", state)
+		}
+		if !called {
+			t.Fatalf("want a network call despite being inside the 24h window when force=true")
+		}
+	})
+
 	t.Run("rate-limited response returns error and does not update the cache", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
@@ -337,7 +368,7 @@ func TestCheckForUpdatesBackground(t *testing.T) {
 		defer swapGithubReleasesURL(srv.URL)()
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-		if _, err := checkForUpdatesBackground(context.Background(), "v1.0.0"); err == nil {
+		if _, err := checkForUpdatesBackground(context.Background(), "v1.0.0", false); err == nil {
 			t.Fatalf("want error on a 403 response")
 		}
 
@@ -354,7 +385,7 @@ func TestCheckForUpdatesBackground(t *testing.T) {
 		defer swapGithubReleasesURL("http://127.0.0.1:1")() // nothing listens on this port
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-		if _, err := checkForUpdatesBackground(context.Background(), "v1.0.0"); err == nil {
+		if _, err := checkForUpdatesBackground(context.Background(), "v1.0.0", false); err == nil {
 			t.Fatalf("want error when the API is unreachable")
 		}
 	})
