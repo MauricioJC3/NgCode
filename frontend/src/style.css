@@ -346,6 +346,7 @@ html, body {
   border: 1px solid var(--border); background: transparent; color: var(--text-primary); cursor: pointer;
 }
 .settings-theme-btn:hover { border-color: var(--accent); color: var(--accent); }
+.settings-theme-btn:disabled { opacity: .6; cursor: default; border-color: var(--border); color: var(--text-primary); }
 .settings-kbd {
   font: 11.5px ui-monospace, "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono", monospace;
   padding: 2px 7px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-void);

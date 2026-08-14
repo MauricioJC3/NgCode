@@ -23,7 +23,7 @@ import {
   OpenFolder, ReadDir, ReadFile, SaveFile, ForceQuit, CreateFile, CreateFolder, MoveEntry,
   DeleteEntry, RenameEntry,
   LspEnsureStarted, LspStopAll, LspDidOpen, LspDidChange, LspCompletion, LspDefinition, LspHover,
-  UpdateAccept, UpdateDismiss, SearchInWorkspace, SearchCancel,
+  UpdateAccept, UpdateDismiss, CheckForUpdateNow, SearchInWorkspace, SearchCancel,
   StartTerminal, WriteToTerminal, ResizeTerminal,
   GitStatus, GitDiffForFile,
 } from '../wailsjs/go/main/App';
@@ -206,6 +206,10 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
             <div class="settings-row">
               <span class="settings-row-label">Tema del editor</span>
               <button class="settings-theme-btn" id="settings-theme-btn" type="button"></button>
+            </div>
+            <div class="settings-row">
+              <span class="settings-row-label">Actualizaciones</span>
+              <button class="settings-theme-btn" id="settings-update-btn" type="button">Buscar actualizaciones</button>
             </div>
           </section>
           <section class="settings-section">
@@ -1835,6 +1839,7 @@ document.getElementById('theme-toggle')!.addEventListener('click', toggleTheme);
 const settingsOverlayEl = document.getElementById('settings-overlay')!;
 const settingsCloseBtn = document.getElementById('settings-close-btn') as HTMLButtonElement;
 const settingsThemeBtn = document.getElementById('settings-theme-btn') as HTMLButtonElement;
+const settingsUpdateBtn = document.getElementById('settings-update-btn') as HTMLButtonElement;
 const settingsKeybindingsEl = document.getElementById('settings-keybindings')!;
 let settingsReturnFocusEl: HTMLElement | null = null;
 
@@ -1891,6 +1896,40 @@ settingsThemeBtn.addEventListener('click', () => {
   toggleTheme();
   renderSettingsTheme();
 });
+
+const SETTINGS_UPDATE_BTN_DEFAULT_LABEL = 'Buscar actualizaciones';
+
+// Manual on-demand update check (Settings panel button), independent of the
+// startup check. On "available", the existing "update:available" listener
+// (see the "auto-update" section below) already reacts and drives the
+// confirm modal — this handler doesn't build a second UI path for that
+// case, it only manages its own inline loading/error/up-to-date states.
+settingsUpdateBtn.addEventListener('click', async () => {
+  settingsUpdateBtn.disabled = true;
+  settingsUpdateBtn.textContent = 'Buscando...';
+
+  try {
+    const result = await CheckForUpdateNow();
+    if (!result.available) {
+      settingsUpdateBtn.textContent = 'Ya estás al día';
+      setTimeout(() => {
+        settingsUpdateBtn.textContent = SETTINGS_UPDATE_BTN_DEFAULT_LABEL;
+        settingsUpdateBtn.disabled = false;
+      }, 2000);
+      return;
+    }
+    settingsUpdateBtn.textContent = SETTINGS_UPDATE_BTN_DEFAULT_LABEL;
+    settingsUpdateBtn.disabled = false;
+  } catch (err) {
+    console.error(err);
+    settingsUpdateBtn.textContent = 'Error al buscar actualizaciones';
+    setTimeout(() => {
+      settingsUpdateBtn.textContent = SETTINGS_UPDATE_BTN_DEFAULT_LABEL;
+      settingsUpdateBtn.disabled = false;
+    }, 2000);
+  }
+});
+
 settingsCloseBtn.addEventListener('click', closeSettingsPanel);
 settingsOverlayEl.addEventListener('click', (e) => {
   if (e.target === settingsOverlayEl) closeSettingsPanel();
