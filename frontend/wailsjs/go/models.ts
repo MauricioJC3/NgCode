@@ -48,6 +48,22 @@ export namespace main {
 	        this.removed = source["removed"];
 	    }
 	}
+	export class UpdateCheckResult {
+	    available: boolean;
+	    version: string;
+	    currentVersion: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateCheckResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.version = source["version"];
+	        this.currentVersion = source["currentVersion"];
+	    }
+	}
 
 }
 
