@@ -301,6 +301,39 @@ html, body {
 
 .editor-body { flex: 1; display: flex; min-height: 0; background: var(--bg-void); position: relative; }
 
+/* ---- integrated terminal ---- */
+.terminal-panel {
+  flex-shrink: 0; display: flex; flex-direction: column; position: relative;
+  height: 240px; min-height: 120px; max-height: 600px;
+  background: var(--bg-void); border-top: 1px solid var(--border);
+}
+.terminal-panel[hidden] { display: none; }
+.terminal-resize-handle {
+  position: absolute; top: -3px; left: 0; right: 0; height: 6px;
+  cursor: row-resize; z-index: 1;
+}
+.terminal-resize-handle:hover { background: var(--accent-soft); }
+.terminal-panel-header {
+  display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+  height: 30px; padding: 0 10px;
+  background: var(--bg-surface); border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--text-secondary);
+}
+.terminal-panel-title { text-transform: uppercase; letter-spacing: .04em; }
+.terminal-close-btn {
+  width: 20px; height: 20px; border: none; background: transparent; color: var(--text-tertiary);
+  border-radius: 3px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.terminal-close-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.terminal-body { flex: 1; min-height: 0; padding: 4px 8px; }
+.terminal-body[hidden] { display: none; }
+.terminal-error {
+  flex: 1; min-height: 0; padding: 12px; color: var(--tk-str, #e07a7a);
+  font-family: ui-monospace, "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px; white-space: pre-wrap;
+}
+.terminal-error[hidden] { display: none; }
+
 /* ---- CodeMirror search panel (@codemirror/search) ---- */
 .cm-panels { background: transparent; }
 .cm-panel.cm-search {

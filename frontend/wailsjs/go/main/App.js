@@ -26,6 +26,10 @@ export function GitStatus(arg1) {
   return window['go']['main']['App']['GitStatus'](arg1);
 }
 
+export function KillTerminal(arg1) {
+  return window['go']['main']['App']['KillTerminal'](arg1);
+}
+
 export function LspCompletion(arg1, arg2, arg3) {
   return window['go']['main']['App']['LspCompletion'](arg1, arg2, arg3);
 }
@@ -78,6 +82,10 @@ export function RenameEntry(arg1, arg2, arg3) {
   return window['go']['main']['App']['RenameEntry'](arg1, arg2, arg3);
 }
 
+export function ResizeTerminal(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ResizeTerminal'](arg1, arg2, arg3);
+}
+
 export function SaveFile(arg1, arg2) {
   return window['go']['main']['App']['SaveFile'](arg1, arg2);
 }
@@ -94,10 +102,18 @@ export function SearchInWorkspace(arg1, arg2, arg3) {
   return window['go']['main']['App']['SearchInWorkspace'](arg1, arg2, arg3);
 }
 
+export function StartTerminal(arg1) {
+  return window['go']['main']['App']['StartTerminal'](arg1);
+}
+
 export function UpdateAccept() {
   return window['go']['main']['App']['UpdateAccept']();
 }
 
 export function UpdateDismiss() {
   return window['go']['main']['App']['UpdateDismiss']();
+}
+
+export function WriteToTerminal(arg1, arg2) {
+  return window['go']['main']['App']['WriteToTerminal'](arg1, arg2);
 }

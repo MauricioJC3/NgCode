@@ -31,6 +31,13 @@ type App struct {
 	searchMu  sync.Mutex
 	searchGen int64
 
+	// terminals holds at most one running pty-backed shell session in v1
+	// (see terminal.go), keyed by UUID so multi-terminal support later
+	// doesn't require an API break. Drained and killed by ForceQuit before
+	// os.Exit, same swap pattern as stopAllLSP/lspClients above.
+	terminalMu sync.Mutex
+	terminals  map[string]*terminalSession
+
 	// gitGen is the generation counter for git status refreshes (see
 	// git.go): bumped by every GitStatus call so an in-flight
 	// runGitStatus goroutine can detect it's been superseded by a newer
@@ -127,19 +134,48 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	return true
 }
 
+// osExit is os.Exit, indirected through a package var so ForceQuit's
+// drain-then-exit sequence can be tested end to end: tests swap this for a
+// no-op recorder instead of actually terminating the test process.
+var osExit = os.Exit
+
 // ForceQuit is called by the frontend once it has confirmed the app is safe
 // to close (no unsaved changes, or the user accepted losing them). It must
 // NOT go through runtime.Quit()/beforeClose again — that would just veto
-// itself the same way. Stops every running language server first: Windows
-// does not kill child processes when their parent exits, so skipping this
-// would leak an orphaned gopls.exe/typescript-language-server.exe/etc. on
-// every close.
+// itself the same way. Stops every running language server and terminal
+// session first: Windows does not kill child processes when their parent
+// exits, so skipping this would leak an orphaned
+// gopls.exe/typescript-language-server.exe/etc., or a shell with a running
+// dev server, on every close. Terminal teardown must kill the ENTIRE
+// process tree (not just the shell PID) — see terminal_unix.go/
+// terminal_windows.go — since a shell can have spawned grandchildren that
+// LSP clients never do.
 func (a *App) ForceQuit() {
 	a.SearchCancel()
 	for _, client := range a.stopAllLSP() {
 		_ = client.stop()
 	}
-	os.Exit(0)
+	for _, sess := range a.stopAllTerminals() {
+		_ = terminalKillFunc(sess)
+	}
+	osExit(0)
+}
+
+// stopAllTerminals atomically clears a.terminals and returns the sessions
+// that were running, leaving the actual (per-OS) teardown to the caller —
+// same swap-and-return shape as stopAllLSP, used by ForceQuit's terminal
+// cleanup step.
+func (a *App) stopAllTerminals() []*terminalSession {
+	a.terminalMu.Lock()
+	sessions := a.terminals
+	a.terminals = make(map[string]*terminalSession)
+	a.terminalMu.Unlock()
+
+	out := make([]*terminalSession, 0, len(sessions))
+	for _, sess := range sessions {
+		out = append(out, sess)
+	}
+	return out
 }
 
 // OpenFile prompts the user to pick a file and returns its content

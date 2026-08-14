@@ -14,6 +14,8 @@ export function GitDiffForFile(arg1:string):Promise<main.GitDiffResult>;
 
 export function GitStatus(arg1:string):Promise<void>;
 
+export function KillTerminal(arg1:string):Promise<void>;
+
 export function LspCompletion(arg1:string,arg2:number,arg3:number):Promise<string>;
 
 export function LspDefinition(arg1:string,arg2:number,arg3:number):Promise<string>;
@@ -40,6 +42,8 @@ export function ReadFile(arg1:string):Promise<string>;
 
 export function RenameEntry(arg1:string,arg2:string,arg3:string):Promise<string>;
 
+export function ResizeTerminal(arg1:string,arg2:number,arg3:number):Promise<void>;
+
 export function SaveFile(arg1:string,arg2:string):Promise<void>;
 
 export function SaveFileAs(arg1:string):Promise<string>;
@@ -48,6 +52,10 @@ export function SearchCancel():Promise<void>;
 
 export function SearchInWorkspace(arg1:string,arg2:string,arg3:boolean):Promise<void>;
 
+export function StartTerminal(arg1:string):Promise<string>;
+
 export function UpdateAccept():Promise<void>;
 
 export function UpdateDismiss():Promise<void>;
+
+export function WriteToTerminal(arg1:string,arg2:string):Promise<void>;
